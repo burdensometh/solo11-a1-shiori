@@ -10,12 +10,20 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/go-shiori/shiori/internal/core"
 	"github.com/go-shiori/shiori/internal/model"
 	"github.com/spf13/cobra"
+)
+
+// Sentinel errors used to classify why a Pocket entry was skipped.
+var (
+	errPocketInvalidURL  = errors.New("URL is not valid")
+	errPocketInvalidDate = errors.New("invalid time added")
+	errPocketDuplicate   = errors.New("URL already exists")
 )
 
 func pocketCmd() *cobra.Command {
@@ -42,86 +50,95 @@ func pocketHandler(cmd *cobra.Command, args []string) {
 	}
 	defer srcFile.Close()
 
-	var bookmarks []model.BookmarkDTO
+	db := deps.Database()
+
+	var kind string
+	var parse func(filter *rerunFilter) ([]parsedImportEntry, model.ImportResult, error)
 	switch filepath.Ext(filePath) {
 	case ".html":
-		bookmarks = parseHtmlExport(ctx, deps.Database(), srcFile)
+		kind = model.ImportKindPocket + "_html"
+		parse = func(filter *rerunFilter) ([]parsedImportEntry, model.ImportResult, error) {
+			return parsePocketHTMLExport(ctx, db, srcFile, filter)
+		}
 	case ".csv":
-		bookmarks = parseCsvExport(ctx, deps.Database(), srcFile)
+		kind = model.ImportKindPocket + "_csv"
+		parse = func(filter *rerunFilter) ([]parsedImportEntry, model.ImportResult, error) {
+			return parsePocketCSVExport(ctx, db, srcFile, filter)
+		}
 	default:
 		cError.Println("Invalid file format. Only HTML and CSV are supported.")
 		os.Exit(1)
 	}
 
-	// Save bookmark to database
-	bookmarks, err = deps.Database().SaveBookmarks(ctx, true, bookmarks...)
+	// On a rerun only the entries that were not successfully imported in
+	// the previous run of the same source are processed.
+	_, saved, err := executeImport(ctx, db, filePath, kind, parse)
 	if err != nil {
-		cError.Printf("Failed to save bookmarks: %v\n", err)
+		cError.Printf("Import failed: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Print imported bookmarks
 	fmt.Println()
-	printBookmarks(bookmarks...)
+	printBookmarks(saved...)
 }
 
-// Parse bookmarks from HTML file
-func parseHtmlExport(ctx context.Context, db model.DB, srcFile *os.File) []model.BookmarkDTO {
-	bookmarks := []model.BookmarkDTO{}
-	mapURL := make(map[string]struct{})
+// parsePocketHTMLExport parses bookmarks from a Pocket HTML export file,
+// collecting structured information about every skipped entry.
+func parsePocketHTMLExport(ctx context.Context, db model.DB, srcFile *os.File, filter *rerunFilter) ([]parsedImportEntry, model.ImportResult, error) {
+	result := model.ImportResult{}
+	entries := []parsedImportEntry{}
+	seenURLs := map[string]struct{}{}
 
 	doc, err := goquery.NewDocumentFromReader(srcFile)
 	if err != nil {
-		cError.Println(err)
-		os.Exit(1)
+		return nil, result, fmt.Errorf("failed to parse bookmark: %w", err)
 	}
 
 	doc.Find("a").Each(func(_ int, a *goquery.Selection) {
-		// Get metadata
+		rawLine, _ := goquery.OuterHtml(a)
+		rawLine = strings.TrimSpace(rawLine)
+
 		title := a.Text()
 		url, _ := a.Attr("href")
 		tagsStr, _ := a.Attr("tags")
 		timeAddedStr, _ := a.Attr("time_added")
 
-		title, url, timeAdded, tags, err := verifyMetadata(title, url, timeAddedStr, tagsStr)
+		if !filter.allows(rawLine, url) {
+			return
+		}
+
+		result.Total++
+
+		bookmark, err := buildPocketBookmark(title, url, timeAddedStr, tagsStr)
 		if err != nil {
-			cError.Printf("Skip %s: %v\n", url, err)
+			classifyPocketError(&result, err, url, rawLine)
 			return
 		}
 
-		if err = handleDuplicates(ctx, db, mapURL, url); err != nil {
-			cError.Printf("Skip %s: %v\n", url, err)
+		if err = checkPocketDuplicate(ctx, db, seenURLs, bookmark.URL); err != nil {
+			classifyPocketError(&result, err, bookmark.URL, rawLine)
 			return
 		}
 
-		// Add item to list
-		bookmark := model.BookmarkDTO{
-			Bookmark: model.Bookmark{
-				URL:        url,
-				Title:      title,
-				ModifiedAt: timeAdded.Format(model.DatabaseDateFormat),
-				CreatedAt:  timeAdded.Format(model.DatabaseDateFormat),
-			},
-			Tags: tags,
-		}
-
-		mapURL[url] = struct{}{}
-		bookmarks = append(bookmarks, bookmark)
+		seenURLs[bookmark.URL] = struct{}{}
+		entries = append(entries, parsedImportEntry{Bookmark: bookmark, RawLine: rawLine})
 	})
 
-	return bookmarks
+	return entries, result, nil
 }
 
-// Parse bookmarks from CSV file
-func parseCsvExport(ctx context.Context, db model.DB, srcFile *os.File) []model.BookmarkDTO {
-	bookmarks := []model.BookmarkDTO{}
-	mapURL := make(map[string]struct{})
+// parsePocketCSVExport parses bookmarks from a Pocket CSV export file,
+// collecting structured information about every skipped entry.
+func parsePocketCSVExport(ctx context.Context, db model.DB, srcFile *os.File, filter *rerunFilter) ([]parsedImportEntry, model.ImportResult, error) {
+	result := model.ImportResult{}
+	entries := []parsedImportEntry{}
+	seenURLs := map[string]struct{}{}
 
 	reader := csv.NewReader(srcFile)
 	records, err := reader.ReadAll()
 	if err != nil {
-		cError.Println(err)
-		os.Exit(1)
+		return nil, result, fmt.Errorf("failed to read CSV export: %w", err)
 	}
 
 	var titleIdx, urlIdx, timeAddedIdx, tagsIdx int
@@ -133,51 +150,72 @@ func parseCsvExport(ctx context.Context, db model.DB, srcFile *os.File) []model.
 			timeAddedIdx = slices.Index(cols, "time_added")
 			tagsIdx = slices.Index(cols, "tags")
 			if titleIdx == -1 || urlIdx == -1 || timeAddedIdx == -1 || tagsIdx == -1 {
-				cError.Printf("Invalid CSV format. Header must contain: title, url, time_added, tags\n")
-				os.Exit(1)
+				return nil, result, errors.New("invalid CSV format. Header must contain: title, url, time_added, tags")
 			}
 			continue
 		}
 
-		// Get metadata
-		title, url, timeAdded, tags, err := verifyMetadata(cols[titleIdx], cols[urlIdx], cols[timeAddedIdx], cols[tagsIdx])
+		// The original CSV row, re-encoded with the same quoting rules the
+		// standard library uses, is stored verbatim for skipped entries.
+		var rawLineBuilder strings.Builder
+		csvWriter := csv.NewWriter(&rawLineBuilder)
+		if err := csvWriter.Write(cols); err != nil {
+			return nil, result, fmt.Errorf("failed to reconstruct CSV row: %w", err)
+		}
+		csvWriter.Flush()
+		if err := csvWriter.Error(); err != nil {
+			return nil, result, fmt.Errorf("failed to reconstruct CSV row: %w", err)
+		}
+		rawLine := strings.TrimRight(rawLineBuilder.String(), "\r\n")
+		url := cols[urlIdx]
+
+		if !filter.allows(rawLine, url) {
+			continue
+		}
+
+		result.Total++
+
+		bookmark, err := buildPocketBookmark(cols[titleIdx], cols[urlIdx], cols[timeAddedIdx], cols[tagsIdx])
 		if err != nil {
-			cError.Printf("Skip %s: %v\n", url, err)
+			classifyPocketError(&result, err, url, rawLine)
 			continue
 		}
 
-		if err = handleDuplicates(ctx, db, mapURL, url); err != nil {
-			cError.Printf("Skip %s: %v\n", url, err)
+		if err = checkPocketDuplicate(ctx, db, seenURLs, bookmark.URL); err != nil {
+			classifyPocketError(&result, err, bookmark.URL, rawLine)
 			continue
 		}
 
-		// Add item to list
-		bookmark := model.BookmarkDTO{
-			Bookmark: model.Bookmark{
-				URL:        url,
-				Title:      title,
-				ModifiedAt: timeAdded.Format(model.DatabaseDateFormat),
-				CreatedAt:  timeAdded.Format(model.DatabaseDateFormat),
-			},
-			Tags: tags,
-		}
-
-		mapURL[url] = struct{}{}
-		bookmarks = append(bookmarks, bookmark)
+		seenURLs[bookmark.URL] = struct{}{}
+		entries = append(entries, parsedImportEntry{Bookmark: bookmark, RawLine: rawLine})
 	}
 
-	return bookmarks
+	return entries, result, nil
 }
 
-// Parse metadata and verify it's validity
-func verifyMetadata(title, url, timeAddedStr, tags string) (string, string, time.Time, []model.TagDTO, error) {
-	// Clean up URL
-	var err error
-	url, err = core.RemoveUTMParams(url)
-	if err != nil {
-		err = fmt.Errorf("URL is not valid, %w", err)
-		return "", "", time.Time{}, nil, err
+// classifyPocketError maps a parsing or duplicate error to a skip reason.
+func classifyPocketError(result *model.ImportResult, err error, url, rawLine string) {
+	switch {
+	case errors.Is(err, errPocketInvalidURL):
+		skip(result, model.SkipReasonInvalidURL, err.Error(), url, rawLine)
+	case errors.Is(err, errPocketInvalidDate):
+		skip(result, model.SkipReasonInvalidDate, err.Error(), url, rawLine)
+	case errors.Is(err, errPocketDuplicate):
+		skip(result, model.SkipReasonDuplicate, err.Error(), url, rawLine)
+	default:
+		skip(result, model.SkipReasonDBError, err.Error(), url, rawLine)
 	}
+}
+
+// buildPocketBookmark validates and assembles a Pocket entry into a
+// bookmark DTO.
+func buildPocketBookmark(title, url, timeAddedStr, tags string) (model.BookmarkDTO, error) {
+	// Clean up URL
+	cleanURL, err := core.RemoveUTMParams(url)
+	if err != nil {
+		return model.BookmarkDTO{}, fmt.Errorf("%w, %s", errPocketInvalidURL, err)
+	}
+	url = cleanURL
 
 	// Make sure title is valid Utf-8
 	title = validateTitle(title, url)
@@ -185,16 +223,14 @@ func verifyMetadata(title, url, timeAddedStr, tags string) (string, string, time
 	// Parse time added
 	timeAddedInt, err := strconv.ParseInt(timeAddedStr, 10, 64)
 	if err != nil {
-		err = fmt.Errorf("invalid time added, %w", err)
-		return "", "", time.Time{}, nil, err
+		return model.BookmarkDTO{}, fmt.Errorf("%w, %s", errPocketInvalidDate, err)
 	}
 	timeAdded := time.Unix(timeAddedInt, 0)
 
-	// Get bookmark tags
+	// Get bookmark tags. We need to split tags by both comma or pipe,
+	// because Pocket's CSV export use pipe as separator, while the HTML
+	// export use comma.
 	tagsList := []model.TagDTO{}
-	// We need to split tags by both comma or pipe,
-	// because Pocket's CSV export use pipe as separator,
-	// while HTML export use comma.
 	for _, tag := range regexp.MustCompile(`[,|]`).Split(tags, -1) {
 		if tag != "" {
 			tagsList = append(tagsList, model.TagDTO{
@@ -203,14 +239,22 @@ func verifyMetadata(title, url, timeAddedStr, tags string) (string, string, time
 		}
 	}
 
-	return title, url, timeAdded, tagsList, nil
+	return model.BookmarkDTO{
+		Bookmark: model.Bookmark{
+			URL:        url,
+			Title:      title,
+			ModifiedAt: timeAdded.Format(model.DatabaseDateFormat),
+			CreatedAt:  timeAdded.Format(model.DatabaseDateFormat),
+		},
+		Tags: tagsList,
+	}, nil
 }
 
-// Checks if the URL already exist, both in bookmark
-// file or in database
-func handleDuplicates(ctx context.Context, db model.DB, mapURL map[string]struct{}, url string) error {
-	if _, exists := mapURL[url]; exists {
-		return errors.New("URL already exists")
+// checkPocketDuplicate verifies whether the URL already exists, either
+// earlier in the same import file or in the database.
+func checkPocketDuplicate(ctx context.Context, db model.DB, seenURLs map[string]struct{}, url string) error {
+	if _, exists := seenURLs[url]; exists {
+		return errPocketDuplicate
 	}
 
 	_, exists, err := db.GetBookmark(ctx, 0, url)
@@ -219,8 +263,24 @@ func handleDuplicates(ctx context.Context, db model.DB, mapURL map[string]struct
 	}
 
 	if exists {
-		return errors.New("URL already exists")
+		return errPocketDuplicate
 	}
 
 	return nil
+}
+
+// parseCsvExport keeps the legacy entry point used by tests. It discards
+// the structured result of the new parser.
+func parseCsvExport(ctx context.Context, db model.DB, srcFile *os.File) []model.BookmarkDTO {
+	entries, _, err := parsePocketCSVExport(ctx, db, srcFile, newRerunFilter())
+	if err != nil {
+		cError.Println(err)
+		os.Exit(1)
+	}
+
+	bookmarks := make([]model.BookmarkDTO, 0, len(entries))
+	for _, entry := range entries {
+		bookmarks = append(bookmarks, entry.Bookmark)
+	}
+	return bookmarks
 }

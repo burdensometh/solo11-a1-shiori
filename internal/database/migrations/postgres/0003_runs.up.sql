@@ -1,0 +1,13 @@
+CREATE TABLE IF NOT EXISTS runs(
+    id SERIAL,
+    source TEXT NOT NULL DEFAULT '',
+    kind VARCHAR(32) NOT NULL DEFAULT '',
+    status VARCHAR(32) NOT NULL DEFAULT '',
+    total INTEGER NOT NULL DEFAULT 0,
+    imported INTEGER NOT NULL DEFAULT 0,
+    skipped JSONB NOT NULL DEFAULT '[]'::jsonb,
+    started_at TEXT NOT NULL DEFAULT '',
+    finished_at TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id)
+);

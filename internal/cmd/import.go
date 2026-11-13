@@ -1,16 +1,9 @@
 package cmd
 
 import (
-	"database/sql"
-	"errors"
 	"fmt"
 	"os"
-	"strconv"
-	"strings"
-	"time"
 
-	"github.com/PuerkitoBio/goquery"
-	"github.com/go-shiori/shiori/internal/core"
 	"github.com/go-shiori/shiori/internal/model"
 	"github.com/spf13/cobra"
 )
@@ -29,7 +22,8 @@ func importCmd() *cobra.Command {
 }
 
 func importHandler(cmd *cobra.Command, args []string) {
-	_, deps := initShiori(cmd.Context(), cmd)
+	ctx := cmd.Context()
+	_, deps := initShiori(ctx, cmd)
 
 	// Parse flags
 	generateTag := cmd.Flags().Changed("generate-tag")
@@ -51,115 +45,20 @@ func importHandler(cmd *cobra.Command, args []string) {
 	}
 	defer srcFile.Close()
 
-	// Parse bookmark's file
-	bookmarks := []model.BookmarkDTO{}
-	mapURL := make(map[string]struct{})
+	db := deps.Database()
 
-	doc, err := goquery.NewDocumentFromReader(srcFile)
-	if err != nil {
-		cError.Printf("Failed to parse bookmark: %v\n", err)
-		os.Exit(1)
-	}
-
-	doc.Find("dt>a").Each(func(_ int, a *goquery.Selection) {
-		// Get related elements
-		dt := a.Parent()
-		dl := dt.Parent()
-		h3 := dl.Parent().Find("h3").First()
-
-		// Get metadata
-		title := a.Text()
-		url, _ := a.Attr("href")
-		strTags, _ := a.Attr("tags")
-
-		dateStr, fieldExists := a.Attr("last_modified")
-		if !fieldExists {
-			dateStr, _ = a.Attr("add_date")
-		}
-
-		// Using now as default date in case no last_modified nor add_date are present
-		modifiedDate := time.Now()
-		if dateStr != "" {
-			modifiedTsInt, err := strconv.Atoi(dateStr)
-			if err != nil {
-				cError.Printf("Skip %s: date field is not valid: %s", url, err)
-				return
-			}
-
-			modifiedDate = time.Unix(int64(modifiedTsInt), 0)
-		}
-
-		// Clean up URL
-		url, err = core.RemoveUTMParams(url)
-		if err != nil {
-			cError.Printf("Skip %s: URL is not valid\n", url)
-			return
-		}
-
-		// Make sure title is valid Utf-8
-		title = validateTitle(title, url)
-
-		// Check if the URL already exist before, both in bookmark
-		// file or in database
-		if _, exist := mapURL[url]; exist {
-			cError.Printf("Skip %s: URL already exists\n", url)
-			return
-		}
-
-		_, exist, err := deps.Database().GetBookmark(cmd.Context(), 0, url)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			cError.Printf("Skip %s: Get Bookmark fail, %v", url, err)
-			return
-		}
-
-		if exist {
-			cError.Printf("Skip %s: URL already exists\n", url)
-			mapURL[url] = struct{}{}
-			return
-		}
-
-		// Get bookmark tags
-		tags := []model.TagDTO{}
-		for _, strTag := range strings.Split(strTags, ",") {
-			strTag = normalizeSpace(strTag)
-			if strTag != "" {
-				tags = append(tags, model.TagDTO{
-					Tag: model.Tag{Name: strTag},
-				})
-			}
-		}
-
-		// Get category name for this bookmark
-		// and add it as tags (if necessary)
-		category := normalizeSpace(h3.Text())
-		if category != "" && generateTag {
-			tags = append(tags, model.TagDTO{
-				Tag: model.Tag{Name: category},
-			})
-		}
-
-		// Add item to list
-		bookmark := model.BookmarkDTO{
-			Bookmark: model.Bookmark{
-				URL:        url,
-				Title:      title,
-				ModifiedAt: modifiedDate.Format(model.DatabaseDateFormat),
-			},
-			Tags: tags,
-		}
-
-		mapURL[url] = struct{}{}
-		bookmarks = append(bookmarks, bookmark)
+	// Parse and import the bookmarks. On a rerun only the entries that
+	// were not successfully imported in the previous run of the same
+	// source are processed.
+	_, saved, err := executeImport(ctx, db, args[0], model.ImportKindNetscape, func(filter *rerunFilter) ([]parsedImportEntry, model.ImportResult, error) {
+		return parseNetscapeImport(ctx, db, srcFile, generateTag, filter)
 	})
-
-	// Save bookmark to database
-	bookmarks, err = deps.Database().SaveBookmarks(cmd.Context(), true, bookmarks...)
 	if err != nil {
-		cError.Printf("Failed to save bookmarks: %v\n", err)
+		cError.Printf("Import failed: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Print imported bookmark
 	fmt.Println()
-	printBookmarks(bookmarks...)
+	printBookmarks(saved...)
 }

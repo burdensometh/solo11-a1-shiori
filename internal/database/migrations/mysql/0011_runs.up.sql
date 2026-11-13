@@ -1,0 +1,13 @@
+CREATE TABLE IF NOT EXISTS runs(
+    id INT(11) NOT NULL AUTO_INCREMENT,
+    source TEXT NOT NULL,
+    kind VARCHAR(32) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    total INT NOT NULL DEFAULT 0,
+    imported INT NOT NULL DEFAULT 0,
+    skipped JSON NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id)
+) CHARACTER SET utf8mb4;

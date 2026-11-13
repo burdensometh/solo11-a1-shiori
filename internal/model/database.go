@@ -104,6 +104,16 @@ type DB interface {
 
 	// BookmarkExists checks if a bookmark with the given ID exists in the database
 	BookmarkExists(ctx context.Context, bookmarkID int) (bool, error)
+
+	// SaveImportRun persists the result of an import run, including the
+	// raw lines of every skipped entry. Returns the stored run with its ID.
+	SaveImportRun(ctx context.Context, run ImportRun) (ImportRun, error)
+
+	// GetImportRun fetches an import run by its ID.
+	GetImportRun(ctx context.Context, id DBID) (ImportRun, bool, error)
+
+	// ListImportRuns lists the most recent import runs, newest first.
+	ListImportRuns(ctx context.Context, limit int) ([]ImportRun, error)
 }
 
 // DBOrderMethod is the order method for getting bookmarks

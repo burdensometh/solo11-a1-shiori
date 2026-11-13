@@ -282,28 +282,90 @@ func (d *BookmarksDomain) UpdateBookmark(ctx context.Context, bookmark model.Boo
 	return &savedBookmark, nil
 }
 
-// DeleteBookmarks deletes multiple bookmarks by their IDs
+// DeleteBookmarks deletes multiple bookmarks by their IDs.
+//
+// The deletion is recorded in the database together with a cleanup task for
+// each bookmark, then the files are removed right away. If any file cannot be
+// removed, the task stays in the database and RunCleanupTasks retries it (for
+// example on the next start).
 func (d *BookmarksDomain) DeleteBookmarks(ctx context.Context, ids []int) error {
 	if len(ids) == 0 {
 		return nil
 	}
 
-	err := d.deps.Database().DeleteBookmarks(ctx, ids...)
-	if err != nil {
+	if err := d.deps.Database().DeleteBookmarks(ctx, ids...); err != nil {
 		return fmt.Errorf("failed to delete bookmarks: %w", err)
 	}
 
-	// The database rows are already gone, so a file that cannot be removed is only logged.
+	// The database rows are already gone, so failures here must not fail the
+	// whole deletion: the tasks are left behind for a later retry.
 	for _, id := range ids {
-		bookmark := &model.BookmarkDTO{Bookmark: model.Bookmark{ID: id}}
-		for _, path := range []string{
-			model.GetThumbnailPath(bookmark),
-			model.GetArchivePath(bookmark),
-			model.GetEbookPath(bookmark),
-		} {
-			if err := d.deps.Domains().Storage().FS().Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				d.deps.Logger().WithError(err).WithField("path", path).Warn("failed to remove bookmark file")
-			}
+		if err := d.cleanupBookmark(ctx, id); err != nil {
+			d.deps.Logger().WithError(err).
+				WithField("bookmark_id", id).
+				Warn("failed to remove bookmark files, will retry later")
+		}
+	}
+
+	return nil
+}
+
+// RunCleanupTasks processes every pending cleanup task left in the database.
+// It is called at startup and after a deletion, so files whose removal failed
+// earlier get another chance. Tasks are removed only once all of their files
+// are gone; the rest are kept and retried next time.
+func (d *BookmarksDomain) RunCleanupTasks(ctx context.Context) error {
+	tasks, err := d.deps.Database().GetCleanupTasks(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get cleanup tasks: %w", err)
+	}
+
+	remaining := 0
+	for _, task := range tasks {
+		if err := d.cleanupBookmark(ctx, task.BookmarkID); err != nil {
+			remaining++
+			d.deps.Logger().WithError(err).
+				WithField("bookmark_id", task.BookmarkID).
+				Warn("failed to remove bookmark files, will retry later")
+		}
+	}
+
+	if remaining > 0 {
+		d.deps.Logger().Warnf("%d bookmark cleanup task(s) could not be completed", remaining)
+	}
+
+	return nil
+}
+
+// cleanupBookmark removes the files of a bookmark and, only if every one of
+// them is gone, the cleanup task recorded for it.
+func (d *BookmarksDomain) cleanupBookmark(ctx context.Context, id int) error {
+	bookmark := &model.BookmarkDTO{Bookmark: model.Bookmark{ID: id}}
+	fs := d.deps.Domains().Storage().FS()
+
+	for _, path := range []string{
+		model.GetThumbnailPath(bookmark),
+		model.GetArchivePath(bookmark),
+		model.GetEbookPath(bookmark),
+	} {
+		// An already missing file is not an error: removing it is idempotent.
+		err := fs.Remove(path)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("failed to remove %s: %w", path, err)
+		}
+	}
+
+	tasks, err := d.deps.Database().GetCleanupTasks(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get cleanup tasks: %w", err)
+	}
+	for _, task := range tasks {
+		if task.BookmarkID != id {
+			continue
+		}
+
+		if err := d.deps.Database().DeleteCleanupTask(ctx, task.ID); err != nil {
+			return fmt.Errorf("failed to delete cleanup task: %w", err)
 		}
 	}
 

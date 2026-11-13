@@ -68,6 +68,7 @@ var mysqlMigrations = []migration{
 	newFileMigration("0.8.2", "0.8.3", "mysql/0008_set_modified_at_equal_created_at"),
 	newFileMigration("0.8.3", "0.8.4", "mysql/0009_index_for_created_at"),
 	newFileMigration("0.8.4", "0.8.5", "mysql/0010_index_for_modified_at"),
+	newFileMigration("0.8.5", "0.8.6", "mysql/0011_cleanup_tasks"),
 }
 
 // MySQLDatabase is implementation of Database interface
@@ -525,6 +526,11 @@ func (db *MySQLDatabase) GetBookmarksCount(ctx context.Context, opts model.DBGet
 }
 
 // DeleteBookmarks removes all record with matching ids from database.
+// When no ids are provided, all bookmarks are removed.
+//
+// A cleanup task is recorded for every bookmark before its record is removed,
+// in the same transaction, so the files stored on disk can be removed after
+// the records are gone without losing track of them.
 func (db *MySQLDatabase) DeleteBookmarks(ctx context.Context, ids ...int) (err error) {
 	if err := db.withTx(ctx, func(tx *sqlx.Tx) error {
 		// Prepare queries
@@ -533,6 +539,12 @@ func (db *MySQLDatabase) DeleteBookmarks(ctx context.Context, ids ...int) (err e
 
 		// Delete bookmark(s)
 		if len(ids) == 0 {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO cleanup_tasks(bookmark_id) SELECT id FROM bookmark
+				ON DUPLICATE KEY UPDATE bookmark_id = bookmark_id`); err != nil {
+				return errors.WithStack(err)
+			}
+
 			_, err := tx.ExecContext(ctx, delBookmarkTag)
 			if err != nil {
 				return errors.WithStack(err)
@@ -546,11 +558,23 @@ func (db *MySQLDatabase) DeleteBookmarks(ctx context.Context, ids ...int) (err e
 			delBookmark += ` WHERE id = ?`
 			delBookmarkTag += ` WHERE bookmark_id = ?`
 
-			stmtDelBookmark, _ := tx.Preparex(delBookmark)
-			stmtDelBookmarkTag, _ := tx.Preparex(delBookmarkTag)
+			stmtDelBookmark, _ := tx.PreparexContext(ctx, delBookmark)
+			stmtDelBookmarkTag, _ := tx.PreparexContext(ctx, delBookmarkTag)
+			stmtCleanupTask, err := tx.PreparexContext(ctx,
+				`INSERT INTO cleanup_tasks(bookmark_id) VALUES(?)
+				ON DUPLICATE KEY UPDATE bookmark_id = bookmark_id`)
+			if err != nil {
+				return errors.WithStack(err)
+			}
+			defer stmtCleanupTask.Close()
 
 			for _, id := range ids {
-				_, err := stmtDelBookmarkTag.ExecContext(ctx, id)
+				_, err := stmtCleanupTask.ExecContext(ctx, id)
+				if err != nil {
+					return errors.WithStack(err)
+				}
+
+				_, err = stmtDelBookmarkTag.ExecContext(ctx, id)
 				if err != nil {
 					return errors.WithStack(err)
 				}

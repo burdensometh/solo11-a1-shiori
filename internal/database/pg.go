@@ -70,6 +70,7 @@ var postgresMigrations = []migration{
 		return nil
 	}),
 	newFileMigration("0.3.0", "0.4.0", "postgres/0002_created_time"),
+	newFileMigration("0.4.0", "0.5.0", "postgres/0003_cleanup_tasks"),
 }
 
 // PGDatabase is implementation of Database interface
@@ -527,6 +528,11 @@ func (db *PGDatabase) GetBookmarksCount(ctx context.Context, opts model.DBGetBoo
 }
 
 // DeleteBookmarks removes all record with matching ids from database.
+// When no ids are provided, all bookmarks are removed.
+//
+// A cleanup task is recorded for every bookmark before its record is removed,
+// in the same transaction, so the files stored on disk can be removed after
+// the records are gone without losing track of them.
 func (db *PGDatabase) DeleteBookmarks(ctx context.Context, ids ...int) (err error) {
 	if err := db.withTx(ctx, func(tx *sqlx.Tx) error {
 		// Prepare queries
@@ -535,6 +541,12 @@ func (db *PGDatabase) DeleteBookmarks(ctx context.Context, ids ...int) (err erro
 
 		// Delete bookmark(s)
 		if len(ids) == 0 {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO cleanup_tasks(bookmark_id) SELECT id FROM bookmark
+				ON CONFLICT DO NOTHING`); err != nil {
+				return errors.WithStack(err)
+			}
+
 			_, err := tx.ExecContext(ctx, delBookmarkTag)
 			if err != nil {
 				return errors.WithStack(err)
@@ -556,8 +568,19 @@ func (db *PGDatabase) DeleteBookmarks(ctx context.Context, ids ...int) (err erro
 			if err != nil {
 				return errors.WithStack(err)
 			}
+			stmtCleanupTask, err := tx.PreparexContext(ctx,
+				`INSERT INTO cleanup_tasks(bookmark_id) VALUES($1) ON CONFLICT DO NOTHING`)
+			if err != nil {
+				return errors.WithStack(err)
+			}
+			defer stmtCleanupTask.Close()
 
 			for _, id := range ids {
+				_, err = stmtCleanupTask.ExecContext(ctx, id)
+				if err != nil {
+					return errors.WithStack(err)
+				}
+
 				_, err = stmtDelBookmarkTag.ExecContext(ctx, id)
 				if err != nil {
 					return errors.WithStack(err)

@@ -45,7 +45,18 @@ type DB interface {
 	GetBookmarksCount(ctx context.Context, opts DBGetBookmarksOptions) (int, error)
 
 	// DeleteBookmarks removes all record with matching ids from database.
+	// When no ids are provided, all bookmarks are removed.
 	DeleteBookmarks(ctx context.Context, ids ...int) error
+
+	// SaveCleanupTask records a pending cleanup task for the given bookmark.
+	// Recording the same bookmark more than once is a no-op.
+	SaveCleanupTask(ctx context.Context, bookmarkID int) error
+
+	// GetCleanupTasks returns every pending cleanup task, oldest first.
+	GetCleanupTasks(ctx context.Context) ([]CleanupTask, error)
+
+	// DeleteCleanupTask removes a task once all of its files are gone.
+	DeleteCleanupTask(ctx context.Context, id DBID) error
 
 	// GetBookmark fetches bookmark based on its ID or URL.
 	GetBookmark(ctx context.Context, id int, url string) (BookmarkDTO, bool, error)

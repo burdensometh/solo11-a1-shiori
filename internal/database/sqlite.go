@@ -64,6 +64,7 @@ var sqliteMigrations = []migration{
 	newFileMigration("0.3.0", "0.4.0", "sqlite/0002_denormalize_content"),
 	newFileMigration("0.4.0", "0.5.0", "sqlite/0003_uniq_id"),
 	newFileMigration("0.5.0", "0.6.0", "sqlite/0004_created_time"),
+	newFileMigration("0.6.0", "0.7.0", "sqlite/0005_cleanup_tasks"),
 }
 
 // SQLiteDatabase is implementation of Database interface
@@ -687,8 +688,98 @@ func (db *SQLiteDatabase) GetBookmarksCount(ctx context.Context, opts model.DBGe
 }
 
 // DeleteBookmarks removes all record with matching ids from database.
+// When no ids are provided, all bookmarks are removed.
+//
+// A cleanup task is recorded for every bookmark before its record is removed,
+// in the same transaction, so the files stored on disk can be removed after
+// the records are gone without losing track of them.
 func (db *SQLiteDatabase) DeleteBookmarks(ctx context.Context, ids ...int) error {
 	if err := db.withTx(ctx, func(tx *sqlx.Tx) error {
+		// Prepare queries
+		delBookmark := `DELETE FROM bookmark`
+		delBookmarkTag := `DELETE FROM bookmark_tag`
+		delBookmarkContent := `DELETE FROM bookmark_content`
+
+		// Delete bookmark(s)
+		if len(ids) == 0 {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO cleanup_tasks(bookmark_id) SELECT id FROM bookmark
+				ON CONFLICT DO NOTHING`); err != nil {
+				return fmt.Errorf("failed to record cleanup tasks: %w", err)
+			}
+
+			_, err := tx.ExecContext(ctx, delBookmarkContent)
+			if err != nil {
+				return fmt.Errorf("failed to prepare delete statement: %w", err)
+			}
+
+			_, err = tx.ExecContext(ctx, delBookmarkTag)
+			if err != nil {
+				return fmt.Errorf("failed to execute delete account statement: %w", err)
+			}
+
+			_, err = tx.ExecContext(ctx, delBookmark)
+			if err != nil {
+				return fmt.Errorf("failed to execute delete bookmark statement: %w", err)
+			}
+		} else {
+			delBookmark += ` WHERE id = ?`
+			delBookmarkTag += ` WHERE bookmark_id = ?`
+			delBookmarkContent += ` WHERE docid = ?`
+
+			stmtDelBookmark, err := tx.Preparex(delBookmark)
+			if err != nil {
+				return fmt.Errorf("failed to get bookmark: %w", err)
+			}
+
+			stmtDelBookmarkTag, err := tx.Preparex(delBookmarkTag)
+			if err != nil {
+				return fmt.Errorf("failed to expand query with IN clause: %w", err)
+			}
+
+			stmtDelBookmarkContent, err := tx.Preparex(delBookmarkContent)
+			if err != nil {
+				return fmt.Errorf("failed to delete bookmark content: %w", err)
+			}
+
+			stmtCleanupTask, err := tx.PreparexContext(ctx,
+				`INSERT INTO cleanup_tasks(bookmark_id) VALUES(?) ON CONFLICT DO NOTHING`)
+			if err != nil {
+				return fmt.Errorf("failed to prepare cleanup task statement: %w", err)
+			}
+			defer stmtCleanupTask.Close()
+
+			for _, id := range ids {
+				_, err = stmtCleanupTask.ExecContext(ctx, id)
+				if err != nil {
+					return fmt.Errorf("failed to record cleanup task: %w", err)
+				}
+
+				_, err = stmtDelBookmarkContent.ExecContext(ctx, id)
+				if err != nil {
+					return fmt.Errorf("failed to delete bookmark: %w", err)
+				}
+
+				_, err = stmtDelBookmarkTag.ExecContext(ctx, id)
+				if err != nil {
+					return fmt.Errorf("failed to delete bookmark tag: %w", err)
+				}
+
+				_, err = stmtDelBookmark.ExecContext(ctx, id)
+				if err != nil {
+					return fmt.Errorf("failed to delete bookmark: %w", err)
+				}
+			}
+		}
+
+		return nil
+	}); err != nil {
+		return fmt.Errorf("failed to update database schema version: %w", err)
+	}
+
+	return nil
+}
+
 		// Prepare queries
 		delBookmark := `DELETE FROM bookmark`
 		delBookmarkTag := `DELETE FROM bookmark_tag`

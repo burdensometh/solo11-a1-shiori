@@ -1,6 +1,8 @@
 package model
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"path/filepath"
 	"strconv"
 )
@@ -63,9 +65,37 @@ func GetEbookPath(bookmark *BookmarkDTO) string {
 	return filepath.Join("ebook", strconv.Itoa(bookmark.ID)+".epub")
 }
 
-// GetArchivePath returns the relative path to the archive of a bookmark in the filesystem
+// ArchiveFileName is the name of the archive file inside its directory.
+const ArchiveFileName = "archive"
+
+// GetArchiveDirPath returns the relative path to the directory that holds the
+// archive of a bookmark. The directory is named after the hash of the bookmark
+// URL, so bookmarks that point to the same URL share a single archive.
+func GetArchiveDirPath(bookmark *BookmarkDTO) string {
+	return filepath.Join("archive", GetArchiveHash(bookmark.URL))
+}
+
+// GetArchivePath returns the relative path to the archive file of a bookmark.
 func GetArchivePath(bookmark *BookmarkDTO) string {
-	return filepath.Join("archive", strconv.Itoa(bookmark.ID))
+	return filepath.Join(GetArchiveDirPath(bookmark), ArchiveFileName)
+}
+
+// GetArchiveHash returns the name of the archive directory for the specified URL.
+func GetArchiveHash(url string) string {
+	sum := sha256.Sum256([]byte(url))
+	return hex.EncodeToString(sum[:])
+}
+
+// ArchiveIsSharedBy reports whether any of the bookmarks points to the same
+// URL, and therefore uses the same archive, as the specified URL.
+func ArchiveIsSharedBy(url string, bookmarks []BookmarkDTO) bool {
+	hash := GetArchiveHash(url)
+	for _, bookmark := range bookmarks {
+		if GetArchiveHash(bookmark.URL) == hash {
+			return true
+		}
+	}
+	return false
 }
 
 // GetThumbnailURL returns the URL path to the thumbnail of a bookmark

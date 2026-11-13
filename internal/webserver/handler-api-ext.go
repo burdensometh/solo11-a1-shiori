@@ -7,9 +7,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
-	fp "path/filepath"
-	"strconv"
 
 	"github.com/go-shiori/shiori/internal/core"
 	"github.com/go-shiori/shiori/internal/model"
@@ -135,17 +132,10 @@ func (h *Handler) ApiDeleteViaExtension(w http.ResponseWriter, r *http.Request, 
 	checkError(err)
 
 	if exist {
-		// Delete bookmarks
-		err = h.DB.DeleteBookmarks(ctx, book.ID)
+		// Delete bookmarks. Archives are keyed by URL, so the domain decides
+		// whether the stored archive is still referenced by another bookmark.
+		err = h.dependencies.Domains().Bookmarks().DeleteBookmarks(ctx, []int{book.ID})
 		checkError(err)
-
-		// Delete thumbnail image and archives from local disk
-		strID := strconv.Itoa(book.ID)
-		imgPath := fp.Join(h.DataDir, "thumb", strID)
-		archivePath := fp.Join(h.DataDir, "archive", strID)
-
-		os.Remove(imgPath)
-		os.Remove(archivePath)
 	}
 
 	fmt.Fprint(w, 1)

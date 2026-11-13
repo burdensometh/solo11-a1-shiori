@@ -3,6 +3,7 @@ package domains_test
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/go-shiori/shiori/internal/domains"
@@ -26,9 +27,10 @@ func TestBookmarkDomain(t *testing.T) {
 	fs.Create("thumb/1")
 	fs.MkdirAll("ebook", 0755)
 	fs.Create("ebook/1.epub")
-	fs.MkdirAll("archive", 0755)
-	// TODO: write a valid archive file
-	fs.Create("archive/1")
+
+	// Archives are stored by the hash of the bookmark URL.
+	testURL := "https://example.com/archive-test"
+	testutil.WriteTestArchive(t, fs, filepath.Join("archive", model.GetArchiveHash(testURL), "archive"))
 
 	domain := domains.NewBookmarksDomain(deps)
 	t.Run("HasEbook", func(t *testing.T) {
@@ -42,10 +44,18 @@ func TestBookmarkDomain(t *testing.T) {
 
 	t.Run("HasArchive", func(t *testing.T) {
 		t.Run("Yes", func(t *testing.T) {
-			require.True(t, domain.HasArchive(&model.BookmarkDTO{Bookmark: model.Bookmark{ID: 1}}))
+			require.True(t, domain.HasArchive(&model.BookmarkDTO{Bookmark: model.Bookmark{URL: testURL}}))
 		})
 		t.Run("No", func(t *testing.T) {
-			require.False(t, domain.HasArchive(&model.BookmarkDTO{Bookmark: model.Bookmark{ID: 2}}))
+			require.False(t, domain.HasArchive(&model.BookmarkDTO{Bookmark: model.Bookmark{ID: 2, URL: "https://example.com/other"}}))
+		})
+		t.Run("Incomplete archive is not reported", func(t *testing.T) {
+			incompleteURL := "https://example.com/incomplete"
+			incompletePath := filepath.Join("archive", model.GetArchiveHash(incompleteURL), "archive")
+			require.NoError(t, fs.MkdirAll(filepath.Dir(incompletePath), 0755))
+			require.NoError(t, afero.WriteFile(fs, incompletePath, []byte("half"), 0644))
+
+			require.False(t, domain.HasArchive(&model.BookmarkDTO{Bookmark: model.Bookmark{URL: incompleteURL}}))
 		})
 	})
 
@@ -60,15 +70,18 @@ func TestBookmarkDomain(t *testing.T) {
 
 	t.Run("GetBookmark", func(t *testing.T) {
 		t.Run("Success", func(t *testing.T) {
-			_, err := deps.Database().SaveBookmarks(context.TODO(), true, *testutil.GetValidBookmark())
+			bookmark := testutil.GetValidBookmark()
+			bookmark.URL = testURL
+			_, err := deps.Database().SaveBookmarks(context.TODO(), true, *bookmark)
 			require.NoError(t, err)
-			bookmark, err := domain.GetBookmark(context.Background(), 1)
+			got, err := domain.GetBookmark(context.Background(), 1)
 			require.NoError(t, err)
-			require.Equal(t, 1, bookmark.ID)
+			require.Equal(t, 1, got.ID)
+			require.Equal(t, testURL, got.URL)
 
 			// Check DTO attributes
-			require.True(t, bookmark.HasEbook)
-			require.True(t, bookmark.HasArchive)
+			require.True(t, got.HasEbook)
+			require.True(t, got.HasArchive)
 		})
 
 		t.Run("NotFound", func(t *testing.T) {
@@ -93,6 +106,7 @@ func TestBookmarkDomain(t *testing.T) {
 		t.Run("Success", func(t *testing.T) {
 			// Create multiple bookmarks
 			bookmark1 := testutil.GetValidBookmark()
+			bookmark1.URL = "https://example.com/fresh"
 			bookmark1.ID = 1
 			bookmark2 := testutil.GetValidBookmark()
 			bookmark2.ID = 2
@@ -106,10 +120,12 @@ func TestBookmarkDomain(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, bookmarks, 2)
 
-			// Verify the bookmarks have the correct properties
+			// Verify the bookmarks have the correct properties. Thumbnails and
+			// ebooks are keyed by bookmark ID, archives by URL.
 			assert.Equal(t, 1, bookmarks[0].ID)
 			assert.True(t, bookmarks[0].HasEbook)
-			assert.True(t, bookmarks[0].HasArchive)
+			assert.Equal(t, testURL, bookmarks[0].URL)
+			assert.True(t, bookmarks[0].HasArchive, "archive is shared by URL, not by bookmark ID")
 
 			assert.Equal(t, 2, bookmarks[1].ID)
 			assert.False(t, bookmarks[1].HasEbook)
@@ -544,20 +560,19 @@ func TestBookmarksDomain_DeleteBookmarks(t *testing.T) {
 		bookmark := &savedBookmarks[0]
 
 		storage := deps.Domains().Storage()
-		paths := []string{
-			model.GetThumbnailPath(bookmark),
-			model.GetArchivePath(bookmark),
-			model.GetEbookPath(bookmark),
-		}
-		for _, path := range paths {
+		thumbnailPath := model.GetThumbnailPath(bookmark)
+		ebookPath := model.GetEbookPath(bookmark)
+		for _, path := range []string{thumbnailPath, ebookPath} {
 			require.NoError(t, storage.WriteData(path, []byte("data")))
 		}
+		testutil.WriteTestArchive(t, storage.FS(), model.GetArchivePath(bookmark))
+		require.True(t, storage.FileExists(model.GetArchivePath(bookmark)))
 
 		require.NoError(t, domain.DeleteBookmarks(ctx, []int{bookmark.ID}))
 
-		for _, path := range paths {
-			require.False(t, storage.FileExists(path), path)
-		}
+		assert.False(t, storage.FileExists(thumbnailPath))
+		assert.False(t, storage.FileExists(ebookPath))
+		assert.False(t, storage.FileExists(model.GetArchivePath(bookmark)))
 	})
 
 	t.Run("delete with empty ids", func(t *testing.T) {

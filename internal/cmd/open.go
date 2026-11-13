@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"os"
 	fp "path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/go-shiori/shiori/internal/core"
 	"github.com/go-shiori/shiori/internal/model"
 	"github.com/go-shiori/warc"
 	"github.com/julienschmidt/httprouter"
@@ -131,8 +131,14 @@ func openHandler(cmd *cobra.Command, args []string) {
 	}
 
 	// Open archive
-	id := strconv.Itoa(bookmarks[0].ID)
-	archivePath := fp.Join(cfg.Storage.DataDir, "archive", id)
+	var archivePath string
+	storage := deps.Domains().Storage()
+	if hasArchive, exists := core.FindArchive(storage, &bookmarks[0]); exists {
+		archivePath = fp.Join(cfg.Storage.DataDir, hasArchive)
+	} else {
+		cError.Println("This bookmark doesn't have any archive")
+		os.Exit(1)
+	}
 
 	archive, err := warc.Open(archivePath)
 	if err != nil {

@@ -83,7 +83,8 @@ func TestGenerateEbook(t *testing.T) {
 
 			bookmark := model.BookmarkDTO{
 				Bookmark: model.Bookmark{
-					ID: 3,
+					ID:  3,
+					URL: "https://example.com/ebook-with-archive",
 				},
 				HasEbook: false,
 			}
@@ -92,18 +93,11 @@ func TestGenerateEbook(t *testing.T) {
 				DataDir:     tmpDir,
 				ContentType: "text/html",
 			}
-			// Create the archive file
-			archivePath := model.GetArchivePath(&bookmark)
-			archiveDirPath := fp.Dir(archivePath)
-			deps.Domains().Storage().FS().MkdirAll(archiveDirPath, os.ModePerm)
-			file, err := deps.Domains().Storage().FS().Create(archivePath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer file.Close()
+			// Create a complete archive file
+			testutil.WriteTestArchive(t, deps.Domains().Storage().FS(), model.GetArchivePath(&bookmark))
 
-			bookmark, err = core.GenerateEbook(deps, mockRequest, fp.Join(dstFile, "1"))
-			assert.True(t, bookmark.HasArchive)
+			bookmarkForTest, err := core.GenerateEbook(deps, mockRequest, fp.Join(dstFile, "1"))
+			assert.True(t, bookmarkForTest.HasArchive)
 			assert.NoError(t, err)
 		})
 	})

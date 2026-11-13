@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	fp "path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -54,26 +53,23 @@ func deleteHandler(cmd *cobra.Command, args []string) {
 	}
 
 	// Delete bookmarks from database
-	err = deps.Database().DeleteBookmarks(cmd.Context(), ids...)
-	if err != nil {
-		cError.Printf("Failed to delete bookmarks: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Delete thumbnail image and archives from local disk
 	if len(ids) == 0 {
-		thumbDir := fp.Join(cfg.Storage.DataDir, "thumb")
-		archiveDir := fp.Join(cfg.Storage.DataDir, "archive")
-		os.RemoveAll(thumbDir)
-		os.RemoveAll(archiveDir)
-	} else {
-		for _, id := range ids {
-			strID := strconv.Itoa(id)
-			imgPath := fp.Join(cfg.Storage.DataDir, "thumb", strID)
-			archivePath := fp.Join(cfg.Storage.DataDir, "archive", strID)
+		// All bookmarks are being removed, so every stored file goes as well.
+		err = deps.Database().DeleteBookmarks(cmd.Context())
+		if err != nil {
+			cError.Printf("Failed to delete bookmarks: %v\n", err)
+			os.Exit(1)
+		}
 
-			os.Remove(imgPath)
-			os.Remove(archivePath)
+		os.RemoveAll(fp.Join(cfg.Storage.DataDir, "thumb"))
+		os.RemoveAll(fp.Join(cfg.Storage.DataDir, "archive"))
+	} else {
+		// The domain also removes the associated files, taking care not to
+		// drop an archive another bookmark still uses.
+		err = deps.Domains().Bookmarks().DeleteBookmarks(cmd.Context(), ids)
+		if err != nil {
+			cError.Printf("Failed to delete bookmarks: %v\n", err)
+			os.Exit(1)
 		}
 	}
 

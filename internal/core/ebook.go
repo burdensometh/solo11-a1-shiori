@@ -23,13 +23,12 @@ func GenerateEbook(deps model.Dependencies, req ProcessRequest, dstPath string) 
 
 	// Get current state of bookmark cheak archive and thumb
 	bookmarkThumbnailPath := model.GetThumbnailPath(&book)
-	bookmarkArchivePath := model.GetArchivePath(&book)
 
 	if deps.Domains().Storage().FileExists(bookmarkThumbnailPath) {
 		book.HasThumbnail = true
 	}
 
-	if deps.Domains().Storage().FileExists(bookmarkArchivePath) {
+	if ArchiveExists(deps, &book) {
 		book.HasArchive = true
 	}
 

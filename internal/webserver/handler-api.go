@@ -7,7 +7,6 @@ import (
 	"log"
 	"math"
 	"net/http"
-	"os"
 	fp "path/filepath"
 	"strconv"
 	"strings"
@@ -94,14 +93,13 @@ func (h *Handler) ApiGetBookmarks(w http.ResponseWriter, r *http.Request, ps htt
 	for i := range bookmarks {
 		strID := strconv.Itoa(bookmarks[i].ID)
 		imgPath := fp.Join(h.DataDir, "thumb", strID)
-		archivePath := fp.Join(h.DataDir, "archive", strID)
 		ebookPath := fp.Join(h.DataDir, "ebook", strID+".epub")
 
 		if FileExists(imgPath) {
 			bookmarks[i].HasThumbnail = true
 		}
 
-		if FileExists(archivePath) {
+		if core.ArchiveExists(h.dependencies, &bookmarks[i]) {
 			bookmarks[i].HasArchive = true
 		}
 		if FileExists(ebookPath) {
@@ -272,20 +270,18 @@ func (h *Handler) ApiDeleteBookmark(w http.ResponseWriter, r *http.Request, ps h
 	err = json.NewDecoder(r.Body).Decode(&ids)
 	checkError(err)
 
-	// Delete bookmarks
-	err = h.DB.DeleteBookmarks(ctx, ids...)
-	checkError(err)
+	// Delete bookmarks. Archives are keyed by URL, so the domain decides
+	// whether the stored archive is still referenced by another bookmark.
+	if len(ids) == 0 {
+		bookmarks, err := h.DB.GetBookmarks(ctx, model.DBGetBookmarksOptions{})
+		checkError(err)
+		for _, bookmark := range bookmarks {
+			ids = append(ids, bookmark.ID)
+		}
+	}
 
-	// Delete thumbnail image and archives from local disk
-	for _, id := range ids {
-		strID := strconv.Itoa(id)
-		imgPath := fp.Join(h.DataDir, "thumb", strID)
-		archivePath := fp.Join(h.DataDir, "archive", strID)
-		ebookPath := fp.Join(h.DataDir, "ebook", strID+".epub")
-
-		os.Remove(imgPath)
-		os.Remove(archivePath)
-		os.Remove(ebookPath)
+	if err = h.dependencies.Domains().Bookmarks().DeleteBookmarks(ctx, ids); err != nil {
+		checkError(err)
 	}
 
 	fmt.Fprint(w, 1)

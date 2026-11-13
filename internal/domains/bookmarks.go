@@ -21,8 +21,7 @@ func (d *BookmarksDomain) HasEbook(b *model.BookmarkDTO) bool {
 }
 
 func (d *BookmarksDomain) HasArchive(b *model.BookmarkDTO) bool {
-	archivePath := model.GetArchivePath(b)
-	return d.deps.Domains().Storage().FileExists(archivePath)
+	return d.deps.Domains().Archiver().HasArchive(b)
 }
 
 func (d *BookmarksDomain) HasThumbnail(b *model.BookmarkDTO) bool {
@@ -288,22 +287,43 @@ func (d *BookmarksDomain) DeleteBookmarks(ctx context.Context, ids []int) error 
 		return nil
 	}
 
-	err := d.deps.Database().DeleteBookmarks(ctx, ids...)
+	// Fetch the URLs before the rows are gone, so archives shared with
+	// bookmarks that are kept can be left in place.
+	bookmarks, err := d.deps.Database().GetBookmarks(ctx, model.DBGetBookmarksOptions{IDs: ids})
+	if err != nil {
+		return fmt.Errorf("failed to get bookmarks: %w", err)
+	}
+
+	err = d.deps.Database().DeleteBookmarks(ctx, ids...)
 	if err != nil {
 		return fmt.Errorf("failed to delete bookmarks: %w", err)
 	}
 
 	// The database rows are already gone, so a file that cannot be removed is only logged.
-	for _, id := range ids {
-		bookmark := &model.BookmarkDTO{Bookmark: model.Bookmark{ID: id}}
-		for _, path := range []string{
-			model.GetThumbnailPath(bookmark),
-			model.GetArchivePath(bookmark),
-			model.GetEbookPath(bookmark),
-		} {
-			if err := d.deps.Domains().Storage().FS().Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				d.deps.Logger().WithError(err).WithField("path", path).Warn("failed to remove bookmark file")
-			}
+	remaining, err := d.deps.Database().GetBookmarks(ctx, model.DBGetBookmarksOptions{})
+	if err != nil {
+		d.deps.Logger().WithError(err).Warn("failed to list remaining bookmarks, archives will be kept")
+		remaining = nil
+	}
+
+	for _, bookmark := range bookmarks {
+		thumbnailPath := model.GetThumbnailPath(&bookmark)
+		ebookPath := model.GetEbookPath(&bookmark)
+		if err := d.deps.Domains().Storage().FS().Remove(thumbnailPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			d.deps.Logger().WithError(err).WithField("path", thumbnailPath).Warn("failed to remove bookmark file")
+		}
+		if err := d.deps.Domains().Storage().FS().Remove(ebookPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			d.deps.Logger().WithError(err).WithField("path", ebookPath).Warn("failed to remove bookmark file")
+		}
+
+		// Archives are keyed by URL: only drop the archive when no remaining
+		// bookmark points to the same URL.
+		if model.ArchiveIsSharedBy(bookmark.URL, remaining) {
+			continue
+		}
+
+		if err := d.deps.Domains().Archiver().DeleteArchive(&bookmark); err != nil {
+			d.deps.Logger().WithError(err).WithField("url", bookmark.URL).Warn("failed to remove bookmark archive")
 		}
 	}
 

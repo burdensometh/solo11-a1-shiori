@@ -17,7 +17,6 @@ import (
 	"github.com/disintegration/imaging"
 	"github.com/go-shiori/go-readability"
 	"github.com/go-shiori/shiori/internal/model"
-	"github.com/go-shiori/warc"
 	"github.com/pkg/errors"
 	_ "golang.org/x/image/webp"
 
@@ -158,29 +157,9 @@ func ProcessBookmark(deps model.Dependencies, req ProcessRequest) (book model.Bo
 
 	// If needed, create offline archive as well
 	if book.CreateArchive {
-		tmpFile, err := os.CreateTemp("", "archive")
+		err = SaveBookmarkArchive(deps, &book, archivalInput, contentType, req.LogArchival)
 		if err != nil {
-			return book, false, fmt.Errorf("failed to create temp archive: %v", err)
-		}
-		defer os.Remove(tmpFile.Name())
-
-		archivalRequest := warc.ArchivalRequest{
-			URL:         book.URL,
-			Reader:      archivalInput,
-			ContentType: contentType,
-			UserAgent:   userAgent,
-			LogEnabled:  req.LogArchival,
-		}
-
-		err = warc.NewArchive(archivalRequest, tmpFile.Name())
-		if err != nil {
-			return book, false, fmt.Errorf("failed to create archive: %v", err)
-		}
-
-		dstPath := model.GetArchivePath(&book)
-		err = deps.Domains().Storage().WriteFile(dstPath, tmpFile)
-		if err != nil {
-			return book, false, fmt.Errorf("failed to move archive to destination: %v", err)
+			return book, false, err
 		}
 
 		book.HasArchive = true

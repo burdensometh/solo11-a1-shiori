@@ -157,31 +157,57 @@ func TestGetArchivePath(t *testing.T) {
 	testCases := []struct {
 		name     string
 		bookmark BookmarkDTO
-		expected string
 	}{
 		{
 			name: "With ID",
 			bookmark: BookmarkDTO{
-				Bookmark: Bookmark{ID: 123},
+				Bookmark: Bookmark{ID: 123, URL: "https://example.com/article"},
 			},
-			expected: filepath.Join("archive", "123"),
 		},
 		{
 			name: "With zero ID",
 			bookmark: BookmarkDTO{
-				Bookmark: Bookmark{ID: 0},
+				Bookmark: Bookmark{ID: 0, URL: "https://example.com/article"},
 			},
-			expected: filepath.Join("archive", "0"),
 		},
 	}
 
 	// Run test cases
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			path := GetArchivePath(&tc.bookmark)
-			assert.Equal(t, tc.expected, path, "Archive path should match expected value")
+			hash := GetArchiveHash(tc.bookmark.URL)
+			assert.Len(t, hash, 64, "Archive directory name should be a hex encoded SHA-256 sum")
+			assert.Equal(t,
+				filepath.Join("archive", hash, "archive"),
+				GetArchivePath(&tc.bookmark),
+				"Archive path should be based on the URL, not the bookmark ID",
+			)
+			assert.Equal(t,
+				filepath.Join("archive", hash),
+				GetArchiveDirPath(&tc.bookmark),
+				"Archive directory path should be based on the URL",
+			)
 		})
 	}
+
+	t.Run("Same URL shares the archive", func(t *testing.T) {
+		first := BookmarkDTO{Bookmark: Bookmark{ID: 1, URL: "https://example.com/article"}}
+		second := BookmarkDTO{Bookmark: Bookmark{ID: 2, URL: "https://example.com/article"}}
+		other := BookmarkDTO{Bookmark: Bookmark{ID: 3, URL: "https://example.com/other"}}
+
+		assert.Equal(t, GetArchivePath(&first), GetArchivePath(&second))
+		assert.NotEqual(t, GetArchivePath(&first), GetArchivePath(&other))
+	})
+
+	t.Run("ArchiveIsSharedBy", func(t *testing.T) {
+		shared := BookmarkDTO{Bookmark: Bookmark{ID: 1, URL: "https://example.com/shared"}}
+		sameURL := BookmarkDTO{Bookmark: Bookmark{ID: 2, URL: "https://example.com/shared"}}
+		otherURL := BookmarkDTO{Bookmark: Bookmark{ID: 3, URL: "https://example.com/other"}}
+
+		assert.True(t, ArchiveIsSharedBy("https://example.com/shared", []BookmarkDTO{shared, sameURL}))
+		assert.False(t, ArchiveIsSharedBy("https://example.com/shared", []BookmarkDTO{otherURL}))
+		assert.False(t, ArchiveIsSharedBy("https://example.com/shared", nil))
+	})
 }
 
 func TestBookmarkRoundTrip(t *testing.T) {

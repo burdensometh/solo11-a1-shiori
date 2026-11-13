@@ -7,6 +7,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>$$.Book.Title$$</title>
     <link rel="stylesheet" href="assets/css/archive.css" />
+    <script src="assets/js/page/archive.js" defer></script>
 </head>
 
 <body class="archive">
@@ -18,6 +19,7 @@
         <a href="bookmark/$$.Book.ID$$/content">View Readable</a>
         $$end$$
     </div>
+    <div id="archive-manifest" data-bookmark-id="$$.Book.ID$$" hidden></div>
     <iframe src="bookmark/$$.Book.ID$$/archive/file/" frameborder="0"></iframe>
 </body>
 

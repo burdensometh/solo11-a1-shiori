@@ -1,5 +1,26 @@
 basePath: /
 definitions:
+  api_v1.archiveManifestResponse:
+    properties:
+      bookmark_id:
+        type: integer
+      created_at:
+        type: string
+      missing:
+        type: integer
+      ok:
+        type: integer
+      resources:
+        items:
+          $ref: '#/definitions/model.ArchiveResource'
+        type: array
+      skipped:
+        type: integer
+      total:
+        type: integer
+      url:
+        type: string
+    type: object
   api_v1.bookmarkDataResponse:
     properties:
       archiveURL:
@@ -113,6 +134,13 @@ definitions:
       html:
         type: string
     type: object
+  api_v1.retryArchiveResourcesPayload:
+    properties:
+      urls:
+        items:
+          type: string
+        type: array
+    type: object
   api_v1.updateAccountPayload:
     properties:
       config:
@@ -193,6 +221,39 @@ definitions:
       username:
         type: string
     type: object
+  model.ArchiveResource:
+    properties:
+      error:
+        type: string
+      name:
+        type: string
+      status:
+        $ref: '#/definitions/model.ArchiveResourceStatus'
+      type:
+        $ref: '#/definitions/model.ArchiveResourceType'
+      url:
+        type: string
+    type: object
+  model.ArchiveResourceStatus:
+    enum:
+    - ok
+    - failed
+    - skipped
+    type: string
+    x-enum-varnames:
+    - ArchiveResourceOK
+    - ArchiveResourceFailed
+    - ArchiveResourceSkipped
+  model.ArchiveResourceType:
+    enum:
+    - image
+    - style
+    - script
+    type: string
+    x-enum-varnames:
+    - ArchiveResourceImage
+    - ArchiveResourceStyle
+    - ArchiveResourceScript
   model.BookmarkDTO:
     properties:
       author:
@@ -610,6 +671,63 @@ paths:
       security:
       - ApiKeyAuth: []
       summary: Update an existing bookmark.
+      tags:
+      - Bookmarks
+  /api/v1/bookmarks/{id}/archive/manifest:
+    get:
+      parameters:
+      - description: Bookmark ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api_v1.archiveManifestResponse'
+        "400":
+          description: Invalid bookmark ID
+        "403":
+          description: Token not provided/invalid
+        "404":
+          description: Bookmark, archive or manifest not found
+      security:
+      - ApiKeyAuth: []
+      summary: Get the resource manifest of a bookmark archive.
+      tags:
+      - Bookmarks
+  /api/v1/bookmarks/{id}/archive/manifest/retry:
+    post:
+      parameters:
+      - description: Bookmark ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: URLs to retry, all missing resources if empty
+        in: body
+        name: payload
+        schema:
+          $ref: '#/definitions/api_v1.retryArchiveResourcesPayload'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api_v1.archiveManifestResponse'
+        "400":
+          description: Invalid bookmark ID or payload
+        "403":
+          description: Token not provided/invalid
+        "404":
+          description: Bookmark, archive or manifest not found
+      security:
+      - ApiKeyAuth: []
+      summary: Retry the missing resources of a bookmark archive.
       tags:
       - Bookmarks
   /api/v1/bookmarks/{id}/data:

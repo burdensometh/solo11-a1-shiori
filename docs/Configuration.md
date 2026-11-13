@@ -57,6 +57,16 @@ The `StorageConfig` struct contains settings related to storage.
 | -------------------- | ------------- | -------- | --------------------------------------- |
 | `SHIORI_DIR`         | (current dir) | No       | Directory where Shiori stores its data. |
 
+### Archive Configuration
+
+The `ArchiveConfig` struct contains settings related to the offline archives.
+
+| Environment variable              | Default                              | Required | Description                                                                                                          |
+| --------------------------------- | ------------------------------------ | -------- | -------------------------------------------------------------------------------------------------------------------- |
+| `SHIORI_ARCHIVE_EXCLUDED_DOMAINS` | (built-in list of analytics domains) | No       | Comma-separated list of third-party analytics/tracking domains whose resources are excluded from the archive manifest. A resource is excluded when its host matches a listed domain or any of its subdomains. |
+
+When a bookmark is archived, Shiori records a resource manifest (`archive/<id>.manifest.json` in the data directory) listing the images, stylesheets and scripts the page references, marking each one as archived or missing. The archive view shows how many resources are missing according to the manifest and allows retrying them individually. Scripts are recorded for transparency but are not stored in archives, since the archiver strips them from pages by design.
+
 #### The data Directory
 
 Shiori is designed to work out of the box, but you can change where it stores your bookmarks if you need to.

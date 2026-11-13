@@ -212,6 +212,14 @@ func (s *HttpServer) Setup(cfg *config.Config, deps *dependencies.Dependencies) 
 		api_v1.HandleGetBookmarkData,
 		globalMiddleware...,
 	))
+	s.mux.HandleFunc("GET /api/v1/bookmarks/{id}/archive/manifest", ToHTTPHandler(deps,
+		api_v1.HandleGetArchiveManifest,
+		globalMiddleware...,
+	))
+	s.mux.HandleFunc("POST /api/v1/bookmarks/{id}/archive/manifest/retry", ToHTTPHandler(deps,
+		api_v1.HandleRetryArchiveResources,
+		globalMiddleware...,
+	))
 	s.mux.HandleFunc("PUT /api/v1/bookmarks/{id}/data", ToHTTPHandler(deps,
 		api_v1.HandleUpdateBookmarkData,
 		globalMiddleware...,

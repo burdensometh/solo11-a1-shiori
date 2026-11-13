@@ -164,6 +164,13 @@ func ProcessBookmark(deps model.Dependencies, req ProcessRequest) (book model.Bo
 		}
 		defer os.Remove(tmpFile.Name())
 
+		// Snapshot the HTML content for the archive manifest, since the
+		// archiver consumes the buffer while archiving
+		var htmlSnapshot []byte
+		if strings.Contains(contentType, "text/html") {
+			htmlSnapshot = archivalInput.Bytes()
+		}
+
 		archivalRequest := warc.ArchivalRequest{
 			URL:         book.URL,
 			Reader:      archivalInput,
@@ -185,6 +192,17 @@ func ProcessBookmark(deps model.Dependencies, req ProcessRequest) (book model.Bo
 
 		book.HasArchive = true
 		book.ModifiedAt = ""
+
+		// Record the archive resource manifest, so missing resources can be
+		// detected and retried later. A failure here is not fatal.
+		if len(htmlSnapshot) > 0 {
+			manifest, err := BuildArchiveManifest(deps, &book, htmlSnapshot, tmpFile.Name())
+			if err != nil {
+				log.Printf("failed to build archive manifest for bookmark %d: %v", book.ID, err)
+			} else if err := SaveArchiveManifest(deps, manifest); err != nil {
+				log.Printf("failed to save archive manifest for bookmark %d: %v", book.ID, err)
+			}
+		}
 	}
 
 	return book, false, nil

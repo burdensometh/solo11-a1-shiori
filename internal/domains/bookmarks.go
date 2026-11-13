@@ -299,6 +299,7 @@ func (d *BookmarksDomain) DeleteBookmarks(ctx context.Context, ids []int) error 
 		for _, path := range []string{
 			model.GetThumbnailPath(bookmark),
 			model.GetArchivePath(bookmark),
+			model.GetArchiveManifestPath(bookmark),
 			model.GetEbookPath(bookmark),
 		} {
 			if err := d.deps.Domains().Storage().FS().Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {

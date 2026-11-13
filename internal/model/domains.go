@@ -84,6 +84,8 @@ type AccountsDomain interface {
 type ArchiverDomain interface {
 	DownloadBookmarkArchive(book BookmarkDTO) (*BookmarkDTO, error)
 	GetBookmarkArchive(book *BookmarkDTO) (*warc.Archive, error)
+	GetArchiveManifest(book *BookmarkDTO) (*ArchiveManifest, error)
+	RetryArchiveResources(book *BookmarkDTO, urls []string) (*ArchiveManifest, error)
 }
 
 type StorageDomain interface {

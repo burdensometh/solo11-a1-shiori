@@ -48,6 +48,18 @@ func (d *ArchiverDomain) GetBookmarkArchive(book *model.BookmarkDTO) (*warc.Arch
 	return warc.Open(filepath.Join(d.deps.Config().Storage.DataDir, archivePath))
 }
 
+// GetArchiveManifest returns the resource manifest of a bookmark archive.
+func (d *ArchiverDomain) GetArchiveManifest(book *model.BookmarkDTO) (*model.ArchiveManifest, error) {
+	return core.LoadArchiveManifest(d.deps, book)
+}
+
+// RetryArchiveResources downloads again the missing resources of a bookmark
+// archive (optionally limited to the submitted URLs) and updates its
+// resource manifest.
+func (d *ArchiverDomain) RetryArchiveResources(book *model.BookmarkDTO, urls []string) (*model.ArchiveManifest, error) {
+	return core.RetryArchiveResources(d.deps, book, urls)
+}
+
 func NewArchiverDomain(deps *dependencies.Dependencies) *ArchiverDomain {
 	return &ArchiverDomain{
 		deps: deps,

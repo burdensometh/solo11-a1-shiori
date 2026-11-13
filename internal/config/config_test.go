@@ -100,6 +100,7 @@ func TestConfigSetDefaults(t *testing.T) {
 	require.NotEmpty(t, cfg.Http.SecretKey)
 	require.NotEmpty(t, cfg.Storage.DataDir)
 	require.NotEmpty(t, cfg.Database.URL)
+	require.Equal(t, DefaultArchiveExcludedDomains, cfg.Archive.ExcludedDomains)
 }
 
 func TestConfigIsValid(t *testing.T) {

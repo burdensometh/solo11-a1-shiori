@@ -110,6 +110,53 @@ type StorageConfig struct {
 	DataDir string `env:"DIR"` // Using DIR to be backwards compatible with the old config
 }
 
+// DefaultArchiveExcludedDomains are third-party analytics/tracking domains
+// whose scripts (and other resources) are excluded from the archive manifest,
+// since they are not needed to render the archived page and usually fail or
+// are unwanted offline.
+var DefaultArchiveExcludedDomains = []string{
+	"google-analytics.com",
+	"googletagmanager.com",
+	"doubleclick.net",
+	"googlesyndication.com",
+	"googleadservices.com",
+	"facebook.net",
+	"clarity.ms",
+	"hotjar.com",
+	"mixpanel.com",
+	"segment.com",
+	"segment.io",
+	"amplitude.com",
+	"sentry.io",
+	"newrelic.com",
+	"nr-data.net",
+	"fullstory.com",
+	"mouseflow.com",
+	"crazyegg.com",
+	"scorecardresearch.com",
+	"quantserve.com",
+	"cnzz.com",
+	"umeng.com",
+	"growingio.com",
+	"sensorsdata.cn",
+	"hm.baidu.com",
+	"mc.yandex.ru",
+	"analytics.twitter.com",
+}
+
+type ArchiveConfig struct {
+	// ExcludedDomains is the list of third-party analytics domains excluded
+	// from the archive manifest. A resource is excluded when its host matches
+	// one of the domains or any of its subdomains.
+	ExcludedDomains []string `env:"ARCHIVE_EXCLUDED_DOMAINS"`
+}
+
+func (c *ArchiveConfig) SetDefaults() {
+	if len(c.ExcludedDomains) == 0 {
+		c.ExcludedDomains = DefaultArchiveExcludedDomains
+	}
+}
+
 type Config struct {
 	Hostname    string `env:"HOSTNAME,required"`
 	Development bool   `env:"DEVELOPMENT,default=False"`
@@ -117,6 +164,7 @@ type Config struct {
 	Database    *DatabaseConfig
 	Storage     *StorageConfig
 	Http        *HttpConfig
+	Archive     *ArchiveConfig
 }
 
 // SetDefaults sets the default values for the configuration
@@ -137,6 +185,7 @@ func (c Config) SetDefaults(logger *logrus.Logger, portableMode bool) {
 	}
 
 	c.Http.SetDefaults(logger)
+	c.Archive.SetDefaults()
 }
 
 func (c *Config) DebugConfiguration(logger *logrus.Logger) {
@@ -167,6 +216,7 @@ func (c *Config) DebugConfiguration(logger *logrus.Logger) {
 	logger.Debugf(" SHIORI_SSO_PROXY_AUTH_ENABLED: %t", c.Http.SSOProxyAuth)
 	logger.Debugf(" SHIORI_SSO_PROXY_AUTH_HEADER_NAME: %s", c.Http.SSOProxyAuthHeaderName)
 	logger.Debugf(" SHIORI_SSO_PROXY_AUTH_TRUSTED: %v", c.Http.SSOProxyAuthTrusted)
+	logger.Debugf(" SHIORI_ARCHIVE_EXCLUDED_DOMAINS: %v", c.Archive.ExcludedDomains)
 }
 
 func (c *Config) IsValid() error {

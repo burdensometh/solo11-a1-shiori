@@ -614,6 +614,98 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/bookmarks/{id}/archive/manifest": {
+            "get": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bookmarks"
+                ],
+                "summary": "Get the resource manifest of a bookmark archive.",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Bookmark ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api_v1.archiveManifestResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid bookmark ID"
+                    },
+                    "403": {
+                        "description": "Token not provided/invalid"
+                    },
+                    "404": {
+                        "description": "Bookmark, archive or manifest not found"
+                    }
+                }
+            }
+        },
+        "/api/v1/bookmarks/{id}/archive/manifest/retry": {
+            "post": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bookmarks"
+                ],
+                "summary": "Retry the missing resources of a bookmark archive.",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Bookmark ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "URLs to retry, all missing resources if empty",
+                        "name": "payload",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/api_v1.retryArchiveResourcesPayload"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api_v1.archiveManifestResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid bookmark ID or payload"
+                    },
+                    "403": {
+                        "description": "Token not provided/invalid"
+                    },
+                    "404": {
+                        "description": "Bookmark, archive or manifest not found"
+                    }
+                }
+            }
+        },
         "/api/v1/bookmarks/{id}/data": {
             "get": {
                 "security": [
@@ -1165,6 +1257,38 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "api_v1.archiveManifestResponse": {
+            "type": "object",
+            "properties": {
+                "bookmark_id": {
+                    "type": "integer"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "missing": {
+                    "type": "integer"
+                },
+                "ok": {
+                    "type": "integer"
+                },
+                "resources": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.ArchiveResource"
+                    }
+                },
+                "skipped": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
         "api_v1.bookmarkDataResponse": {
             "type": "object",
             "properties": {
@@ -1339,6 +1463,17 @@ const docTemplate = `{
                 }
             }
         },
+        "api_v1.retryArchiveResourcesPayload": {
+            "type": "object",
+            "properties": {
+                "urls": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
         "api_v1.updateAccountPayload": {
             "type": "object",
             "properties": {
@@ -1461,6 +1596,52 @@ const docTemplate = `{
                     "type": "string"
                 }
             }
+        },
+        "model.ArchiveResource": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "status": {
+                    "$ref": "#/definitions/model.ArchiveResourceStatus"
+                },
+                "type": {
+                    "$ref": "#/definitions/model.ArchiveResourceType"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "model.ArchiveResourceStatus": {
+            "type": "string",
+            "enum": [
+                "ok",
+                "failed",
+                "skipped"
+            ],
+            "x-enum-varnames": [
+                "ArchiveResourceOK",
+                "ArchiveResourceFailed",
+                "ArchiveResourceSkipped"
+            ]
+        },
+        "model.ArchiveResourceType": {
+            "type": "string",
+            "enum": [
+                "image",
+                "style",
+                "script"
+            ],
+            "x-enum-varnames": [
+                "ArchiveResourceImage",
+                "ArchiveResourceStyle",
+                "ArchiveResourceScript"
+            ]
         },
         "model.BookmarkDTO": {
             "type": "object",

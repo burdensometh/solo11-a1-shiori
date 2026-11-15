@@ -32,3 +32,4 @@ export { default as DocumentIcon } from './DocumentIcon.vue';
 export { default as UsersIcon } from './UsersIcon.vue';
 export { default as CogIcon } from './CogIcon.vue';
 export { default as ChartBarIcon } from './ChartBarIcon.vue';
+export { default as WarningIcon } from './WarningIcon.vue';

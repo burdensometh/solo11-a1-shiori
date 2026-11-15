@@ -219,20 +219,46 @@ func HandleUpdateBookmarkData(deps model.Dependencies, c model.WebContext) {
 			payload.SkipExisting,
 		)
 		if err != nil {
-			deps.Logger().WithError(err).Error("failed to update bookmark data")
-			response.SendError(c, http.StatusInternalServerError, "Failed to update bookmark data")
+			// A processing failure is not a request error: the bookmark still
+			// exists, so answer 200 with the failure details attached. This lets
+			// the UI show which step failed and offer another retry instead of
+			// getting an opaque 500.
+			deps.Logger().WithError(err).
+				WithField("bookmark_id", bookmarkID).
+				Warn("bookmark data update failed")
+			if updatedBookmark != nil {
+				bookmark = updatedBookmark
+			} else {
+				bookmark.ProcessingStatus = model.BookmarkProcessingFailed
+				if bookmark.ProcessingFailedStep == "" {
+					bookmark.ProcessingFailedStep = model.BookmarkStepDownload
+				}
+				bookmark.ProcessingError = err.Error()
+			}
+
+			// Persist the failure so it stays visible after a page reload.
+			// SaveBookmarks is used directly because UpdateBookmark converts via
+			// ToBookmark(), which would drop the processing-only DTO fields.
+			if _, saveErr := deps.Database().SaveBookmarks(c.Request().Context(), false, *bookmark); saveErr != nil {
+				deps.Logger().WithError(saveErr).Error("failed to persist bookmark processing failure")
+			}
+			response.SendJSON(c, http.StatusOK, bookmark)
 			return
 		}
 
 		// Save updated bookmark to database
-		_, err = deps.Domains().Bookmarks().UpdateBookmark(c.Request().Context(), updatedBookmark.Bookmark)
+		savedBookmark, err := deps.Domains().Bookmarks().UpdateBookmark(c.Request().Context(), updatedBookmark.Bookmark)
 		if err != nil {
 			deps.Logger().WithError(err).Error("failed to save updated bookmark")
 			response.SendError(c, http.StatusInternalServerError, "Failed to save bookmark")
 			return
 		}
 
-		bookmark = updatedBookmark
+		// Preserve the processing outcome reported by the pipeline.
+		savedBookmark.ProcessingStatus = updatedBookmark.ProcessingStatus
+		savedBookmark.ProcessingFailedStep = updatedBookmark.ProcessingFailedStep
+		savedBookmark.ProcessingError = updatedBookmark.ProcessingError
+		bookmark = savedBookmark
 	}
 
 	// Build resource URLs
@@ -323,8 +349,36 @@ func HandleUpdateCache(deps model.Dependencies, c model.WebContext) {
 			// Download and process bookmark
 			updatedBook, err := deps.Domains().Bookmarks().UpdateBookmarkCache(c.Request().Context(), book, payload.KeepMetadata, payload.SkipExist)
 			if err != nil {
-				deps.Logger().WithError(err).Error("error updating bookmark cache")
-				return
+				// Record the failure on the bookmark instead of only logging it,
+				// then persist it so the UI can show what went wrong.
+				deps.Logger().WithError(err).
+					WithField("bookmark_id", book.ID).
+					Warn("error updating bookmark cache")
+				if updatedBook != nil {
+					book = *updatedBook
+				} else {
+					book.ProcessingStatus = model.BookmarkProcessingFailed
+					if book.ProcessingFailedStep == "" {
+						book.ProcessingFailedStep = model.BookmarkStepDownload
+					}
+					book.ProcessingError = err.Error()
+				}
+				if _, saveErr := deps.Database().SaveBookmarks(c.Request().Context(), false, book); saveErr != nil {
+					deps.Logger().WithError(saveErr).
+						WithField("bookmark_id", book.ID).
+						Error("failed to persist bookmark processing failure")
+				}
+				updatedBook = &book
+			} else if _, saveErr := deps.Database().SaveBookmarks(c.Request().Context(), false, *updatedBook); saveErr != nil {
+				// Persist the processed content/archive and any step-level failure
+				// reported by the pipeline. Without this the cache update only
+				// existed in the response and was lost on reload.
+				deps.Logger().WithError(saveErr).
+					WithField("bookmark_id", updatedBook.ID).
+					Error("failed to save updated bookmark cache")
+				updatedBook.ProcessingStatus = model.BookmarkProcessingFailed
+				updatedBook.ProcessingFailedStep = model.BookmarkStepSave
+				updatedBook.ProcessingError = saveErr.Error()
 			}
 
 			mx.Lock()
@@ -588,85 +642,47 @@ func HandleCreateBookmark(deps model.Dependencies, c model.WebContext) {
 	}
 	payload.URL = cleanURL
 
-	// Create bookmark for domain operations
-	bookmark := model.Bookmark{
-		URL:     payload.URL,
-		Title:   payload.Title,
-		Excerpt: payload.Excerpt,
-	}
-
 	// Set Public field if provided, otherwise default to 0 (internal)
+	public := 0
 	if payload.Public != nil {
-		bookmark.Public = *payload.Public
-	} else {
-		bookmark.Public = 0
+		public = *payload.Public
 	}
 
-	// If title is not provided, default to URL
-	if strings.TrimSpace(bookmark.Title) == "" {
-		bookmark.Title = bookmark.URL
+	// Archive/ebook options. By default every entry point creates an archive
+	// unless the caller explicitly opts out, which keeps the web UI and the
+	// browser extension consistent.
+	createArchive := true
+	createEbook := false
+	if payload.Options != nil {
+		createArchive = payload.Options.CreateArchive
+		createEbook = payload.Options.CreateEbook
 	}
 
-	// Create the bookmark
-	createdBookmark, err := deps.Domains().Bookmarks().CreateBookmark(c.Request().Context(), bookmark)
+	// Run the shared ingestion pipeline: it persists the bookmark, downloads and
+	// processes the page and reports per-step failures on the returned DTO
+	// instead of hiding them in server logs.
+	ingested, err := deps.Domains().Bookmarks().IngestBookmark(c.Request().Context(), model.IngestBookmarkRequest{
+		URL:           payload.URL,
+		Title:         payload.Title,
+		Excerpt:       payload.Excerpt,
+		Public:        public,
+		CreateArchive: createArchive,
+		CreateEbook:   createEbook,
+	})
 	if err != nil {
-		deps.Logger().Error("error creating bookmark: ", err)
-
-		// Check for specific errors
+		deps.Logger().WithError(err).Error("error creating bookmark")
 		if errors.Is(err, model.ErrBookmarkAlreadyExists) {
 			response.SendError(c, http.StatusConflict, "already_exists.bookmark")
 			return
 		}
-
 		response.SendError(c, http.StatusInternalServerError, "Failed to create bookmark")
 		return
 	}
 
-	// Process bookmark to create readable content and optionally archive/ebook
-	// This matches the behavior of the legacy API
-	userHasDefinedTitle := strings.TrimSpace(payload.Title) != ""
-	userHasDefinedExcerpt := strings.TrimSpace(payload.Excerpt) != ""
-
-	// Set flags for archive/ebook creation from options
-	// Default behavior: always create archive unless explicitly disabled
-	if payload.Options != nil {
-		// Use explicit options if provided
-		createdBookmark.CreateArchive = payload.Options.CreateArchive
-		createdBookmark.CreateEbook = payload.Options.CreateEbook
-	} else {
-		// No options provided - default to creating archive (matches legacy API behavior)
-		createdBookmark.CreateArchive = true
-		createdBookmark.CreateEbook = false
-	}
-
-	// Update bookmark cache to process content
-	// Keep metadata if user provided title or excerpt (UpdateBookmarkCache uses same flag for both)
-	// For quick add, always extract metadata from the page
-	keepMetadata := userHasDefinedTitle || userHasDefinedExcerpt
-	processedBookmark, err := deps.Domains().Bookmarks().UpdateBookmarkCache(
-		c.Request().Context(),
-		*createdBookmark,
-		keepMetadata,
-		false, // Don't skip existing
-	)
-	if err != nil {
-		// Log error but don't fail the request - bookmark was created successfully
-		deps.Logger().WithError(err).Warn("failed to process bookmark content, bookmark was still created")
-		// Return the created bookmark without processed content
-		response.SendJSON(c, http.StatusCreated, createdBookmark)
-		return
-	}
-
-	// Save the processed bookmark back to database
-	updatedBookmark, err := deps.Domains().Bookmarks().UpdateBookmark(c.Request().Context(), processedBookmark.Bookmark)
-	if err != nil {
-		deps.Logger().WithError(err).Warn("failed to save processed bookmark, returning created bookmark")
-		// Return the created bookmark even if saving processed version failed
-		response.SendJSON(c, http.StatusCreated, createdBookmark)
-		return
-	}
-
-	response.SendJSON(c, http.StatusCreated, updatedBookmark)
+	// The ingestion pipeline returns 201 even when the background processing
+	// failed: the bookmark itself was created and the DTO carries the failure
+	// details so the client can display it and trigger a retry.
+	response.SendJSON(c, http.StatusCreated, ingested)
 }
 
 // HandleListBookmarks lists bookmarks with optional filtering

@@ -70,6 +70,21 @@ var postgresMigrations = []migration{
 		return nil
 	}),
 	newFileMigration("0.3.0", "0.4.0", "postgres/0002_created_time"),
+	newFuncMigration("0.4.0", "0.5.0", func(db *sql.DB) error {
+		// Persist bookmark processing status so failures survive refreshes and
+		// retries. IF NOT EXISTS keeps the migration safe to re-run.
+		statements := []string{
+			`ALTER TABLE bookmark ADD COLUMN IF NOT EXISTS processing_status TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE bookmark ADD COLUMN IF NOT EXISTS processing_failed_step TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE bookmark ADD COLUMN IF NOT EXISTS processing_error TEXT NOT NULL DEFAULT ''`,
+		}
+		for _, statement := range statements {
+			if _, err := db.Exec(statement); err != nil {
+				return fmt.Errorf("failed to add processing columns to bookmark table: %w", err)
+			}
+		}
+		return nil
+	}),
 }
 
 // PGDatabase is implementation of Database interface
@@ -141,8 +156,9 @@ func (db *PGDatabase) SaveBookmarks(ctx context.Context, create bool, bookmarks 
 	if err := db.withTx(ctx, func(tx *sqlx.Tx) error {
 		// Prepare statement
 		stmtInsertBook, err := tx.Preparex(`INSERT INTO bookmark
-			(url, title, excerpt, author, public, content, html, modified_at, created_at)
-			VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			(url, title, excerpt, author, public, content, html, modified_at, created_at,
+			 processing_status, processing_failed_step, processing_error)
+			VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id`)
 		if err != nil {
 			return errors.WithStack(err)
@@ -156,8 +172,11 @@ func (db *PGDatabase) SaveBookmarks(ctx context.Context, create bool, bookmarks 
 			public   = $5,
 			content  = $6,
 			html     = $7,
-			modified_at = $8
-			WHERE id = $9`)
+			modified_at = $8,
+			processing_status = $9,
+			processing_failed_step = $10,
+			processing_error = $11
+			WHERE id = $12`)
 		if err != nil {
 			return errors.WithStack(err)
 		}
@@ -210,11 +229,13 @@ func (db *PGDatabase) SaveBookmarks(ctx context.Context, create bool, bookmarks 
 				book.CreatedAt = modifiedTime
 				err = stmtInsertBook.QueryRowContext(ctx,
 					book.URL, book.Title, book.Excerpt, book.Author,
-					book.Public, book.Content, book.HTML, book.ModifiedAt, book.CreatedAt).Scan(&book.ID)
+					book.Public, book.Content, book.HTML, book.ModifiedAt, book.CreatedAt,
+					string(book.ProcessingStatus), book.ProcessingFailedStep, book.ProcessingError).Scan(&book.ID)
 			} else {
 				_, err = stmtUpdateBook.ExecContext(ctx,
 					book.URL, book.Title, book.Excerpt, book.Author,
-					book.Public, book.Content, book.HTML, book.ModifiedAt, book.ID)
+					book.Public, book.Content, book.HTML, book.ModifiedAt,
+					string(book.ProcessingStatus), book.ProcessingFailedStep, book.ProcessingError, book.ID)
 			}
 			if err != nil {
 				if isPQUniqueViolation(err, "bookmark_url_UNIQUE") {
@@ -291,7 +312,10 @@ func (db *PGDatabase) GetBookmarks(ctx context.Context, opts model.DBGetBookmark
 		`public`,
 		`created_at`,
 		`modified_at`,
-		`content <> '' has_content`}
+		`content <> '' has_content`,
+		`processing_status`,
+		`processing_failed_step`,
+		`processing_error`}
 
 	if opts.WithContent {
 		columns = append(columns, `content`, `html`)
@@ -585,7 +609,8 @@ func (db *PGDatabase) GetBookmark(ctx context.Context, id int, url string) (mode
 	sb := sqlbuilder.PostgreSQL.NewSelectBuilder()
 	sb.Select(
 		"id", "url", "title", "excerpt", "author", `"public"`, "modified_at",
-		"content", "html", "created_at", "has_content")
+		"content", "html", "created_at", "has_content",
+		"processing_status", "processing_failed_step", "processing_error")
 	sb.From("bookmark")
 
 	// Add conditions

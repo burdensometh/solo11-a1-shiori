@@ -68,6 +68,23 @@ var mysqlMigrations = []migration{
 	newFileMigration("0.8.2", "0.8.3", "mysql/0008_set_modified_at_equal_created_at"),
 	newFileMigration("0.8.3", "0.8.4", "mysql/0009_index_for_created_at"),
 	newFileMigration("0.8.4", "0.8.5", "mysql/0010_index_for_modified_at"),
+	newFuncMigration("0.8.5", "0.9.0", func(db *sql.DB) error {
+		// Persist bookmark processing status so failures survive refreshes and
+		// retries. Tolerate duplicate columns for databases created from a
+		// schema that already included them.
+		columns := map[string]string{
+			"processing_status":      "TEXT NOT NULL DEFAULT ('')",
+			"processing_failed_step": "TEXT NOT NULL DEFAULT ('')",
+			"processing_error":       "TEXT NOT NULL DEFAULT ('')",
+		}
+		for name, definition := range columns {
+			statement := fmt.Sprintf("ALTER TABLE bookmark ADD COLUMN %s %s", name, definition)
+			if _, err := db.Exec(statement); err != nil && !strings.Contains(err.Error(), `Duplicate column name`) {
+				return fmt.Errorf("failed to add %s column to bookmark table: %w", name, err)
+			}
+		}
+		return nil
+	}),
 }
 
 // MySQLDatabase is implementation of Database interface
@@ -138,8 +155,9 @@ func (db *MySQLDatabase) SaveBookmarks(ctx context.Context, create bool, bookmar
 	if err := db.withTx(ctx, func(tx *sqlx.Tx) error {
 		// Prepare statement
 		stmtInsertBook, err := tx.Preparex(`INSERT INTO bookmark
-			(url, title, excerpt, author, public, content, html, modified_at, created_at)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			(url, title, excerpt, author, public, content, html, modified_at, created_at,
+			 processing_status, processing_failed_step, processing_error)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
 			return errors.WithStack(err)
 		}
@@ -152,7 +170,10 @@ func (db *MySQLDatabase) SaveBookmarks(ctx context.Context, create bool, bookmar
 			public   = ?,
 			content  = ?,
 			html     = ?,
-			modified_at = ?
+			modified_at = ?,
+			processing_status = ?,
+			processing_failed_step = ?,
+			processing_error = ?
 		WHERE id = ?`)
 		if err != nil {
 			return errors.WithStack(err)
@@ -207,7 +228,8 @@ func (db *MySQLDatabase) SaveBookmarks(ctx context.Context, create bool, bookmar
 				var res sql.Result
 				res, err = stmtInsertBook.ExecContext(ctx,
 					book.URL, book.Title, book.Excerpt, book.Author,
-					book.Public, book.Content, book.HTML, book.ModifiedAt, book.CreatedAt)
+					book.Public, book.Content, book.HTML, book.ModifiedAt, book.CreatedAt,
+					string(book.ProcessingStatus), book.ProcessingFailedStep, book.ProcessingError)
 				if err == nil {
 					var bookID int64
 					bookID, err = res.LastInsertId()
@@ -216,7 +238,8 @@ func (db *MySQLDatabase) SaveBookmarks(ctx context.Context, create bool, bookmar
 			} else {
 				_, err = stmtUpdateBook.ExecContext(ctx,
 					book.URL, book.Title, book.Excerpt, book.Author,
-					book.Public, book.Content, book.HTML, book.ModifiedAt, book.ID)
+					book.Public, book.Content, book.HTML, book.ModifiedAt,
+					string(book.ProcessingStatus), book.ProcessingFailedStep, book.ProcessingError, book.ID)
 			}
 			if err != nil {
 				// Map unique constraint violations to database errors
@@ -302,7 +325,10 @@ func (db *MySQLDatabase) GetBookmarks(ctx context.Context, opts model.DBGetBookm
 		`public`,
 		`created_at`,
 		`modified_at`,
-		`content <> "" as has_content`}
+		`content <> "" as has_content`,
+		`processing_status`,
+		`processing_failed_step`,
+		`processing_error`}
 
 	if opts.WithContent {
 		columns = append(columns, `content`, `html`)
@@ -577,7 +603,8 @@ func (db *MySQLDatabase) GetBookmark(ctx context.Context, id int, url string) (m
 	sb := sqlbuilder.NewSelectBuilder()
 	sb.Select(
 		"id", "url", "title", "excerpt", "author", `public`, "modified_at",
-		"content", "html", "created_at", "has_content")
+		"content", "html", "created_at", "has_content",
+		"processing_status", "processing_failed_step", "processing_error")
 	sb.From("bookmark")
 
 	// Add conditions

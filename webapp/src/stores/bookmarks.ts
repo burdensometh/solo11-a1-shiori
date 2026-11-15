@@ -283,6 +283,32 @@ export const useBookmarksStore = defineStore('bookmarks', () => {
     );
   };
 
+  // Retry processing for a bookmark whose ingestion failed. The backend re-runs
+  // the download/processing pipeline, persists the new processing status and
+  // returns the updated data; we then re-fetch the bookmark so the local list
+  // reflects the retry outcome.
+  const retryBookmarkProcessing = async (id: number) => {
+    const api = getBookmarksApi();
+    await api.apiV1BookmarksIdDataPut({
+      id,
+      payload: {
+        updateReadable: true,
+        createArchive: true,
+        createEbook: false,
+        keepMetadata: true,
+        skipExisting: false,
+      },
+    });
+
+    // Refresh the bookmark in the local list so the UI state follows the retry.
+    const refreshed = await api.apiV1BookmarksIdGet({ id });
+    const index = bookmarks.value.findIndex(bookmark => bookmark.id === id);
+    if (index !== -1) {
+      bookmarks.value[index] = refreshed;
+    }
+    return refreshed;
+  };
+
   return {
     bookmarks,
     isLoading,
@@ -300,5 +326,6 @@ export const useBookmarksStore = defineStore('bookmarks', () => {
     removeTagFromBookmark,
     getBookmarkData,
     updateBookmarkData,
+    retryBookmarkProcessing,
   };
 });

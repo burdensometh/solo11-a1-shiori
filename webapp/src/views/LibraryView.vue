@@ -22,6 +22,7 @@ import {
   FileTextIcon,
   ExternalLinkIcon,
   PlusIcon,
+  WarningIcon,
 } from '@/components/icons';
 
 const bookmarksStore = useBookmarksStore();
@@ -328,6 +329,15 @@ onUnmounted(() => {
                   </h3>
                   <!-- Feature icons -->
                   <div class="flex items-center gap-1 flex-shrink-0">
+                    <WarningIcon
+                      v-if="bookmark.processingStatus === 'failed'"
+                      class="h-4 w-4 text-red-500 dark:text-red-400"
+                      :title="
+                        bookmark.processingError
+                          ? `${t('bookmarks.processing_failed')}: ${bookmark.processingError}`
+                          : t('bookmarks.processing_failed')
+                      "
+                    />
                     <FileTextIcon
                       v-if="bookmark.hasContent"
                       class="h-4 w-4 text-gray-500 dark:text-gray-400"

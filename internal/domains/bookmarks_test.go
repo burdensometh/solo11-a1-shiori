@@ -186,8 +186,14 @@ func TestBookmarkDomain(t *testing.T) {
 
 			result, err := domain.UpdateBookmarkCache(ctx, bookmark, true, false)
 			require.Error(t, err)
-			require.Nil(t, result)
+			require.NotNil(t, result)
 			require.Contains(t, err.Error(), "failed to download bookmark")
+
+			// The failed step must be reported on the returned DTO so callers
+			// can persist and display it.
+			assert.Equal(t, model.BookmarkProcessingFailed, result.ProcessingStatus)
+			assert.Equal(t, model.BookmarkStepDownload, result.ProcessingFailedStep)
+			assert.NotEmpty(t, result.ProcessingError)
 		})
 
 		// Test the skip existing functionality

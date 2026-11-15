@@ -57,6 +57,11 @@ type BookmarksDomain interface {
 	SearchBookmarks(ctx context.Context, options BookmarksSearchOptions) ([]BookmarkDTO, error)
 	CountBookmarks(ctx context.Context, options BookmarksSearchOptions) (int, error)
 	UpdateBookmarkCache(ctx context.Context, bookmark BookmarkDTO, keepMetadata bool, skipExist bool) (*BookmarkDTO, error)
+	// IngestBookmark is the single entry point used by every client (web UI,
+	// browser extension, legacy API) to create or update a bookmark together with
+	// its readable content, thumbnail, archive and ebook. It makes sure the
+	// archive/title/processing-result semantics are identical across entry points.
+	IngestBookmark(ctx context.Context, request IngestBookmarkRequest) (*BookmarkDTO, error)
 	BulkUpdateBookmarkTags(ctx context.Context, bookmarkIDs []int, tagIDs []int) error
 	AddTagToBookmark(ctx context.Context, bookmarkID int, tagID int) error
 	RemoveTagFromBookmark(ctx context.Context, bookmarkID int, tagID int) error
@@ -64,6 +69,26 @@ type BookmarksDomain interface {
 	CreateBookmark(ctx context.Context, bookmark Bookmark) (*BookmarkDTO, error)
 	UpdateBookmark(ctx context.Context, bookmark Bookmark) (*BookmarkDTO, error)
 	DeleteBookmarks(ctx context.Context, ids []int) error
+}
+
+// IngestBookmarkRequest is the payload for BookmarksDomain.IngestBookmark.
+// Content is optional: the browser extension can send the page HTML itself,
+// when it is nil the page is downloaded from the URL.
+type IngestBookmarkRequest struct {
+	URL           string
+	Title         string
+	Excerpt       string
+	Public        int
+	Tags          []TagDTO
+	Content       []byte
+	ContentType   string
+	CreateArchive bool
+	CreateEbook   bool
+	// UpdateIfExists defines what happens when a bookmark with the same URL
+	// already exists. When false (web API behavior) the call fails with
+	// ErrBookmarkAlreadyExists. When true (extension behavior) the existing
+	// bookmark is reused and reprocessed.
+	UpdateIfExists bool
 }
 
 type AuthDomain interface {

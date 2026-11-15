@@ -20,6 +20,30 @@ type Bookmark struct {
 	HasContent bool   `db:"has_content"`
 }
 
+// BookmarkProcessingStatus describes the outcome of the background work
+// (downloading the page, extracting readable content, creating the archive).
+type BookmarkProcessingStatus string
+
+const (
+	// BookmarkProcessingPending means processing has not run or finished yet.
+	BookmarkProcessingPending BookmarkProcessingStatus = ""
+	// BookmarkProcessingSuccess means every requested step finished successfully.
+	BookmarkProcessingSuccess BookmarkProcessingStatus = "success"
+	// BookmarkProcessingFailed means at least one step failed, see ProcessingError.
+	BookmarkProcessingFailed BookmarkProcessingStatus = "failed"
+)
+
+// Processing step identifiers used in BookmarkDTO.ProcessingFailedStep. They let
+// the UI tell the user at which stage a bookmark ingestion got stuck.
+const (
+	BookmarkStepDownload  = "download"
+	BookmarkStepReadable  = "readable"
+	BookmarkStepThumbnail = "thumbnail"
+	BookmarkStepEbook     = "ebook"
+	BookmarkStepArchive   = "archive"
+	BookmarkStepSave      = "save"
+)
+
 // BookmarkDTO is the data transfer object for bookmarks sent to/from clients
 // It embeds the Bookmark struct and adds additional fields for API responses
 type BookmarkDTO struct {
@@ -31,6 +55,13 @@ type BookmarkDTO struct {
 	HasThumbnail  bool
 	CreateArchive bool
 	CreateEbook   bool
+
+	// ProcessingStatus / ProcessingFailedStep / ProcessingError are persisted so
+	// a failed ingestion stays visible across page reloads and is cleared by a
+	// successful retry.
+	ProcessingStatus     BookmarkProcessingStatus `db:"processing_status" json:"ProcessingStatus,omitempty"`
+	ProcessingFailedStep string                   `db:"processing_failed_step" json:"ProcessingFailedStep,omitempty"`
+	ProcessingError      string                   `db:"processing_error" json:"ProcessingError,omitempty"`
 }
 
 // PopulateImageURL sets the ImageURL field based on HasThumbnail

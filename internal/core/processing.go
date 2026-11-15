@@ -38,6 +38,22 @@ type ProcessRequest struct {
 
 var ErrNoSupportedImageType = errors.New("unsupported image type")
 
+// markProcessingFailed records the processing outcome on the bookmark so callers
+// can tell which step failed without digging into server logs.
+func markProcessingFailed(book *model.BookmarkDTO, step string, err error) {
+	book.ProcessingStatus = model.BookmarkProcessingFailed
+	book.ProcessingFailedStep = step
+	book.ProcessingError = err.Error()
+}
+
+// markProcessingSuccess flags the bookmark as fully processed. The status is
+// only set when no error is returned to the caller.
+func markProcessingSuccess(book *model.BookmarkDTO) {
+	book.ProcessingStatus = model.BookmarkProcessingSuccess
+	book.ProcessingFailedStep = ""
+	book.ProcessingError = ""
+}
+
 // ProcessBookmark process the bookmark and archive it if needed.
 // Return three values, is error fatal, and error value.
 func ProcessBookmark(deps model.Dependencies, req ProcessRequest) (book model.BookmarkDTO, isFatalErr bool, err error) {
@@ -46,7 +62,9 @@ func ProcessBookmark(deps model.Dependencies, req ProcessRequest) (book model.Bo
 
 	// Make sure bookmark ID is defined
 	if book.ID == 0 {
-		return book, true, fmt.Errorf("bookmark ID is not valid")
+		err = fmt.Errorf("bookmark ID is not valid")
+		markProcessingFailed(&book, model.BookmarkStepSave, err)
+		return book, true, err
 	}
 
 	// Split bookmark content so it can be processed several times
@@ -63,7 +81,9 @@ func ProcessBookmark(deps model.Dependencies, req ProcessRequest) (book model.Bo
 
 	_, err = io.Copy(multiWriter, req.Content)
 	if err != nil {
-		return book, false, fmt.Errorf("failed to process article: %v", err)
+		err = fmt.Errorf("failed to process article: %v", err)
+		markProcessingFailed(&book, model.BookmarkStepDownload, err)
+		return book, false, err
 	}
 
 	// If this is HTML, parse for readable content
@@ -74,12 +94,16 @@ func ProcessBookmark(deps model.Dependencies, req ProcessRequest) (book model.Bo
 
 		nurl, err := url.Parse(book.URL)
 		if err != nil {
-			return book, true, fmt.Errorf("failed to parse url: %v", err)
+			err = fmt.Errorf("failed to parse url: %v", err)
+			markProcessingFailed(&book, model.BookmarkStepReadable, err)
+			return book, true, err
 		}
 
 		article, err := readability.FromReader(readabilityInput, nurl)
 		if err != nil {
-			return book, false, fmt.Errorf("failed to parse article: %v", err)
+			err = fmt.Errorf("failed to parse article: %v", err)
+			markProcessingFailed(&book, model.BookmarkStepReadable, err)
+			return book, false, err
 		}
 
 		book.Author = article.Byline
@@ -145,11 +169,21 @@ func ProcessBookmark(deps model.Dependencies, req ProcessRequest) (book model.Bo
 		req.Bookmark = book
 
 		if strings.Contains(contentType, "application/pdf") {
-			return book, false, errors.Wrap(err, "can't create ebook from pdf")
+			// Ebooks cannot be generated from PDFs. Historically this returned no
+			// error, so keep the request succeeding but record on the bookmark that
+			// the ebook step was skipped, otherwise the client would wait forever for
+			// an artifact that will never exist.
+			book.ProcessingStatus = model.BookmarkProcessingFailed
+			book.ProcessingFailedStep = model.BookmarkStepEbook
+			book.ProcessingError = "can't create ebook from pdf"
+			log.Print(book.ProcessingError)
+			return book, false, nil
 		} else {
 			_, err = GenerateEbook(deps, req, ebookPath)
 			if err != nil {
-				return book, true, errors.Wrap(err, "failed to create ebook")
+				err = errors.Wrap(err, "failed to create ebook")
+				markProcessingFailed(&book, model.BookmarkStepEbook, err)
+				return book, true, err
 			}
 			book.HasEbook = true
 			book.ModifiedAt = ""
@@ -160,7 +194,9 @@ func ProcessBookmark(deps model.Dependencies, req ProcessRequest) (book model.Bo
 	if book.CreateArchive {
 		tmpFile, err := os.CreateTemp("", "archive")
 		if err != nil {
-			return book, false, fmt.Errorf("failed to create temp archive: %v", err)
+			err = fmt.Errorf("failed to create temp archive: %v", err)
+			markProcessingFailed(&book, model.BookmarkStepArchive, err)
+			return book, false, err
 		}
 		defer os.Remove(tmpFile.Name())
 
@@ -174,19 +210,24 @@ func ProcessBookmark(deps model.Dependencies, req ProcessRequest) (book model.Bo
 
 		err = warc.NewArchive(archivalRequest, tmpFile.Name())
 		if err != nil {
-			return book, false, fmt.Errorf("failed to create archive: %v", err)
+			err = fmt.Errorf("failed to create archive: %v", err)
+			markProcessingFailed(&book, model.BookmarkStepArchive, err)
+			return book, false, err
 		}
 
 		dstPath := model.GetArchivePath(&book)
 		err = deps.Domains().Storage().WriteFile(dstPath, tmpFile)
 		if err != nil {
-			return book, false, fmt.Errorf("failed to move archive to destination: %v", err)
+			err = fmt.Errorf("failed to move archive to destination: %v", err)
+			markProcessingFailed(&book, model.BookmarkStepArchive, err)
+			return book, false, err
 		}
 
 		book.HasArchive = true
 		book.ModifiedAt = ""
 	}
 
+	markProcessingSuccess(&book)
 	return book, false, nil
 }
 

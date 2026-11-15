@@ -1504,6 +1504,15 @@ const docTemplate = `{
                 "modifiedAt": {
                     "type": "string"
                 },
+                "processingError": {
+                    "type": "string"
+                },
+                "processingFailedStep": {
+                    "type": "string"
+                },
+                "processingStatus": {
+                    "type": "string"
+                },
                 "public": {
                     "type": "integer"
                 },

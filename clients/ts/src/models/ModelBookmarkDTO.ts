@@ -52,7 +52,25 @@ export interface ModelBookmarkDTO {
      */
     createdAt?: string;
     /**
-     * 
+     *
+     * @type {string}
+     * @memberof ModelBookmarkDTO
+     */
+    processingError?: string;
+    /**
+     *
+     * @type {string}
+     * @memberof ModelBookmarkDTO
+     */
+    processingFailedStep?: string;
+    /**
+     *
+     * @type {string}
+     * @memberof ModelBookmarkDTO
+     */
+    processingStatus?: string;
+    /**
+     *
      * @type {string}
      * @memberof ModelBookmarkDTO
      */
@@ -161,6 +179,9 @@ export function ModelBookmarkDTOFromJSONTyped(json: any, ignoreDiscriminator: bo
         'id': json['ID'] == null ? undefined : json['ID'],
         'imageURL': json['ImageURL'] == null ? undefined : json['ImageURL'],
         'modifiedAt': json['ModifiedAt'] == null ? undefined : json['ModifiedAt'],
+        'processingError': json['ProcessingError'] == null ? undefined : json['ProcessingError'],
+        'processingFailedStep': json['ProcessingFailedStep'] == null ? undefined : json['ProcessingFailedStep'],
+        'processingStatus': json['ProcessingStatus'] == null ? undefined : json['ProcessingStatus'],
         '_public': json['Public'] == null ? undefined : json['Public'],
         'tags': json['Tags'] == null ? undefined : ((json['Tags'] as Array<any>).map(ModelTagDTOFromJSON)),
         'title': json['Title'] == null ? undefined : json['Title'],
@@ -192,6 +213,9 @@ export function ModelBookmarkDTOToJSONTyped(value?: ModelBookmarkDTO | null, ign
         'ID': value['id'],
         'ImageURL': value['imageURL'],
         'ModifiedAt': value['modifiedAt'],
+        'ProcessingError': value['processingError'],
+        'ProcessingFailedStep': value['processingFailedStep'],
+        'ProcessingStatus': value['processingStatus'],
         'Public': value['_public'],
         'Tags': value['tags'] == null ? undefined : ((value['tags'] as Array<any>).map(ModelTagDTOToJSON)),
         'Title': value['title'],

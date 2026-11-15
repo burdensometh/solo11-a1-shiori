@@ -1511,6 +1511,15 @@
                 },
                 "url": {
                     "type": "string"
+                },
+                "processingError": {
+                    "type": "string"
+                },
+                "processingFailedStep": {
+                    "type": "string"
+                },
+                "processingStatus": {
+                    "type": "string"
                 }
             }
         },

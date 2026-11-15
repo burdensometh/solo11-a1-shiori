@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/auth';
 import AppLayout from '@/components/layout/AppLayout.vue';
 import { ArrowLeftIcon } from '@/components/icons';
 import BookmarkDetailHeader from '@/components/BookmarkDetailHeader.vue';
+import ProcessingStatusBanner from '@/components/ProcessingStatusBanner.vue';
 import { Button } from '@/components/ui';
 import { useI18n } from 'vue-i18n';
 import type { ModelBookmarkDTO } from '@/client';
@@ -106,6 +107,12 @@ onMounted(() => {
 
       <!-- Content -->
       <div v-else-if="bookmark" class="space-y-6">
+        <!-- Processing failure with per-step details and a retry action -->
+        <ProcessingStatusBanner
+          :bookmark="bookmark"
+          @retried="refreshed => (bookmark = refreshed)"
+        />
+
         <!-- Header -->
         <BookmarkDetailHeader
           :bookmark="bookmark"

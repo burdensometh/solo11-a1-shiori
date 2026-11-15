@@ -10,6 +10,7 @@ import {
   BookIcon,
   FileTextIcon,
   ExternalLinkIcon,
+  WarningIcon,
 } from '@/components/icons';
 import type { ModelBookmarkDTO } from '@/client';
 import { useI18n } from 'vue-i18n';
@@ -99,6 +100,13 @@ const handleEditClick = () => {
         </h3>
         <!-- Feature icons -->
         <div class="flex items-center gap-1 flex-shrink-0">
+          <WarningIcon v-if="props.bookmark.processingStatus === 'failed'"
+            class="h-3 w-3 text-red-500 dark:text-red-400"
+            :title="
+              props.bookmark.processingError
+                ? `${t('bookmarks.processing_failed')}: ${props.bookmark.processingError}`
+                : t('bookmarks.processing_failed')
+            " />
           <FileTextIcon v-if="props.bookmark.hasContent" class="h-3 w-3 text-gray-500 dark:text-gray-400"
             :title="t('bookmarks.has_readable_content')" />
           <ArchiveIcon v-if="props.bookmark.hasArchive" class="h-3 w-3 text-gray-500 dark:text-gray-400"

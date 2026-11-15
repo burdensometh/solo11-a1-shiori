@@ -95,6 +95,21 @@
     "unknown_author": "Unknown",
     "archived_version": "Archived Version",
     "archived_content": "Archived content",
+    "processing_failed": "Processing failed",
+    "processing_failed_title": "This bookmark could not be fully processed",
+    "processing_retry": "Retry processing",
+    "processing_retrying": "Retrying...",
+    "processing_retry_success": "Bookmark reprocessed successfully",
+    "processing_retry_failed": "Retry failed, the bookmark could not be processed",
+    "processing_step": {
+      "download": "downloading the page",
+      "readable": "extracting readable content",
+      "thumbnail": "downloading the thumbnail",
+      "ebook": "generating the ebook",
+      "archive": "creating the archive",
+      "save": "saving the bookmark"
+    },
+    "processing_failure_detail": "Failed while {step}: {message}",
     "no_readable_content": "No readable content available for this bookmark.",
     "view_original_page": "View Original Page",
     "error": {

@@ -1,120 +1,88 @@
 package webserver
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
 	"net/http"
 	"os"
 	fp "path/filepath"
 	"strconv"
 
-	"github.com/go-shiori/shiori/internal/core"
 	"github.com/go-shiori/shiori/internal/model"
 	"github.com/julienschmidt/httprouter"
 )
 
+// extensionBookmarkPayload is the payload sent by the browser extension. It
+// mirrors model.BookmarkDTO but the archive/ebook flags are pointers so an
+// absent value falls back to the same default as the web entry point (archive
+// enabled, ebook disabled) instead of silently disabling the archive.
+type extensionBookmarkPayload struct {
+	URL           string         `json:"url"`
+	Title         string         `json:"title"`
+	Excerpt       string         `json:"excerpt"`
+	Tags          []model.TagDTO `json:"tags"`
+	HTML          string         `json:"html"`
+	Public        int            `json:"public"`
+	CreateArchive *bool          `json:"create_archive"`
+	CreateEbook   *bool          `json:"create_ebook"`
+}
+
 // ApiInsertViaExtension is handler for POST /api/bookmarks/ext
+//
+// It goes through the same ingestion pipeline as the v1 web API so the
+// extension and the web UI produce identical results for a given URL: the same
+// archive/ebook defaults, the same handling of user supplied titles and the
+// same per-step processing status on the returned bookmark.
 func (h *Handler) ApiInsertViaExtension(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
 	ctx := r.Context()
 
 	// Make sure session still valid
-	err := h.validateSession(r)
-	checkError(err)
+	if err := h.validateSession(r); err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
 
 	// Decode request
-	request := model.BookmarkDTO{}
-	err = json.NewDecoder(r.Body).Decode(&request)
-	checkError(err)
+	var payload extensionBookmarkPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request payload: %s", err), http.StatusBadRequest)
+		return
+	}
 
-	// Clean up bookmark URL
-	request.URL, err = core.RemoveUTMParams(request.URL)
+	// Defaults must match HandleCreateBookmark in the v1 API: create an archive
+	// unless explicitly disabled, never create an ebook unless explicitly enabled.
+	createArchive := true
+	if payload.CreateArchive != nil {
+		createArchive = *payload.CreateArchive
+	}
+	createEbook := false
+	if payload.CreateEbook != nil {
+		createEbook = *payload.CreateEbook
+	}
+
+	book, err := h.dependencies.Domains().Bookmarks().IngestBookmark(ctx, model.IngestBookmarkRequest{
+		URL:            payload.URL,
+		Title:          payload.Title,
+		Excerpt:        payload.Excerpt,
+		Public:         payload.Public,
+		Tags:           payload.Tags,
+		Content:        []byte(payload.HTML),
+		CreateArchive:  createArchive,
+		CreateEbook:    createEbook,
+		UpdateIfExists: true,
+	})
 	if err != nil {
-		panic(fmt.Errorf("failed to clean URL: %v", err))
+		h.dependencies.Logger().WithError(err).WithField("url", payload.URL).Error("failed to ingest extension bookmark")
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
-	// Check if bookmark already exists.
-	book, exist, err := h.DB.GetBookmark(ctx, 0, request.URL)
-	if err != nil {
-		panic(fmt.Errorf("failed to get bookmark, URL: %v", err))
-	}
-
-	// If it already exists, we need to set ID and tags.
-	if exist {
-		book.HTML = request.HTML
-
-		mapOldTags := map[string]model.TagDTO{}
-		for _, oldTag := range book.Tags {
-			mapOldTags[oldTag.Name] = oldTag
-		}
-
-		for _, newTag := range request.Tags {
-			if _, tagExist := mapOldTags[newTag.Name]; !tagExist {
-				book.Tags = append(book.Tags, newTag)
-			}
-		}
-	} else if request.Title == "" {
-		request.Title = request.URL
-	}
-
-	// Since we are using extension, the extension might send the HTML content
-	// so no need to download it again here. However, if it's empty, it might be not HTML file
-	// so we download it here.
-	var contentType string
-	var contentBuffer io.Reader
-
-	if request.HTML == "" {
-		contentBuffer, contentType, _ = core.DownloadBookmark(request.URL)
-	} else {
-		contentType = "text/html; charset=UTF-8"
-		contentBuffer = bytes.NewBufferString(request.HTML)
-	}
-
-	// Save the bookmark with whatever we already have downloaded
-	// since we need the ID in order to download the archive
-	// Only when old bookmark is not exists.
-	if !exist {
-		books, err := h.DB.SaveBookmarks(ctx, true, request)
-		if err != nil {
-			log.Printf("error saving bookmark before downloading content: %s", err)
-			return
-		}
-		book = books[0]
-	}
-
-	// At this point the web page already downloaded.
-	// Time to process it.
-	if contentBuffer != nil {
-		book.CreateArchive = true
-		request := core.ProcessRequest{
-			DataDir:     h.DataDir,
-			Bookmark:    book,
-			Content:     contentBuffer,
-			ContentType: contentType,
-		}
-
-		var isFatalErr bool
-		book, isFatalErr, err = core.ProcessBookmark(h.dependencies, request)
-
-		if tmp, ok := contentBuffer.(io.ReadCloser); ok {
-			tmp.Close()
-		}
-
-		// If we can't process or update the saved bookmark, just log it and continue on with the
-		// request.
-		if err != nil && isFatalErr {
-			log.Printf("failed to process bookmark: %v", err)
-		} else if _, err := h.DB.SaveBookmarks(ctx, false, book); err != nil {
-			log.Printf("error saving bookmark after downloading content: %s", err)
-		}
-	}
-
-	// Return the new bookmark
+	// Return the bookmark, including ProcessingStatus/ProcessingFailedStep so the
+	// extension can surface failed fetches instead of guessing from file flags.
 	w.Header().Set("Content-Type", "application/json")
-	err = json.NewEncoder(w).Encode(&book)
-	checkError(err)
+	if err := json.NewEncoder(w).Encode(book); err != nil {
+		h.dependencies.Logger().WithError(err).Error("failed to encode extension response")
+	}
 }
 
 // ApiDeleteViaExtension is handler for DELETE /api/bookmark/ext

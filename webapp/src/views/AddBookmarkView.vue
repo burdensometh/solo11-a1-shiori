@@ -79,11 +79,20 @@ const handleSubmit = async () => {
       }
     }
 
-    // Show success toast
-    success(
-      t('bookmarks.toast.created_success'),
-      t('bookmarks.toast.created_success_message')
-    );
+    // 3. The bookmark is always created, but background processing (download,
+    // archive...) can fail. Surface that instead of claiming full success.
+    if (newBookmark.processingStatus === 'failed') {
+      error(
+        t('bookmarks.processing_failed'),
+        newBookmark.processingError || t('bookmarks.processing_failed_title')
+      );
+    } else {
+      // Show success toast
+      success(
+        t('bookmarks.toast.created_success'),
+        t('bookmarks.toast.created_success_message')
+      );
+    }
 
     // Redirect to library page after successful creation
     router.push('/library');

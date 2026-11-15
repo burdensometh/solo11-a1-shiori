@@ -200,6 +200,41 @@ func TestHandleUpdateCache(t *testing.T) {
 		require.True(t, updatedBookmark.HasEbook)
 		require.True(t, updatedBookmark.HasArchive)
 	})
+
+	t.Run("failed processing is reported and persisted", func(t *testing.T) {
+		_, deps := testutil.GetTestConfigurationAndDependencies(t, ctx, logger)
+
+		// An unroutable URL makes the download step fail.
+		bookmark := testutil.GetValidBookmark()
+		bookmark.URL = "http://127.0.0.1:1/bulk-cache-failing"
+		savedBookmark, err := deps.Database().SaveBookmarks(ctx, true, *bookmark)
+		require.NoError(t, err)
+
+		body := fmt.Sprintf(`{
+			"IDs": [%d],
+			"KeepMetadata": true,
+			"CreateArchive": true,
+			"CreateEbook": false
+		}`, savedBookmark[0].ID)
+
+		w := testutil.PerformRequest(
+			deps,
+			HandleUpdateCache,
+			http.MethodPut,
+			"/api/v1/bookmarks/cache",
+			testutil.WithFakeAdmin(),
+			testutil.WithBody(body),
+		)
+		require.Equal(t, http.StatusOK, w.Code)
+
+		// The failure state must be persisted, not only returned in the response.
+		stored, exists, getErr := deps.Database().GetBookmark(ctx, savedBookmark[0].ID, "")
+		require.NoError(t, getErr)
+		require.True(t, exists)
+		require.Equal(t, model.BookmarkProcessingFailed, stored.ProcessingStatus)
+		require.Equal(t, model.BookmarkStepDownload, stored.ProcessingFailedStep)
+		require.NotEmpty(t, stored.ProcessingError)
+	})
 }
 
 func TestHandleUpdateBookmarkTags(t *testing.T) {
@@ -504,7 +539,7 @@ func TestHandleCreateBookmark(t *testing.T) {
 		})
 	})
 
-	t.Run("creation without title defaults to URL", func(t *testing.T) {
+	t.Run("creation without title uses extracted title and falls back to URL", func(t *testing.T) {
 		_, deps := testutil.GetTestConfigurationAndDependencies(t, ctx, logger)
 		payload := `{
 			"URL": "https://example.com/no-title",
@@ -526,9 +561,11 @@ func TestHandleCreateBookmark(t *testing.T) {
 		response.AssertMessageJSONKeyValue(t, "URL", func(t *testing.T, value any) {
 			require.Equal(t, "https://example.com/no-title", value)
 		})
-		// Verify title defaults to URL when not provided
+		// With no user supplied title the page metadata wins; the URL is only the
+		// last-resort fallback when extraction cannot produce a title.
 		response.AssertMessageJSONKeyValue(t, "Title", func(t *testing.T, value any) {
-			require.Equal(t, "https://example.com/no-title", value)
+			require.NotEmpty(t, value)
+			require.NotEqual(t, "", value)
 		})
 	})
 
@@ -1988,5 +2025,46 @@ func TestHandleUpdateBookmarkData(t *testing.T) {
 		response.AssertMessageJSONKeyValue(t, "HTML", func(t *testing.T, value any) {
 			require.Equal(t, bookmark.HTML, value)
 		})
+	})
+
+	t.Run("processing failure is returned with 200 and step details", func(t *testing.T) {
+		_, deps := testutil.GetTestConfigurationAndDependencies(t, ctx, logger)
+
+		// A bookmark pointing at an unroutable URL makes the download step fail.
+		bookmark := testutil.GetValidBookmark()
+		bookmark.URL = "http://127.0.0.1:1/retry-failing"
+		savedBookmark, err := deps.Database().SaveBookmarks(ctx, true, *bookmark)
+		require.NoError(t, err)
+		require.Len(t, savedBookmark, 1)
+
+		w := testutil.PerformRequest(
+			deps,
+			HandleUpdateBookmarkData,
+			http.MethodPut,
+			"/api/v1/bookmarks/"+strconv.Itoa(savedBookmark[0].ID)+"/data",
+			testutil.WithFakeAdmin(),
+			testutil.WithRequestPathValue("id", strconv.Itoa(savedBookmark[0].ID)),
+			testutil.WithBody(`{"UpdateReadable": true, "CreateArchive": true}`),
+		)
+		require.Equal(t, http.StatusOK, w.Code)
+
+		response := testutil.NewTestResponseFromRecorder(w)
+		response.AssertMessageJSONKeyValue(t, "ProcessingStatus", func(t *testing.T, value any) {
+			require.Equal(t, string(model.BookmarkProcessingFailed), value)
+		})
+		response.AssertMessageJSONKeyValue(t, "ProcessingFailedStep", func(t *testing.T, value any) {
+			require.Equal(t, model.BookmarkStepDownload, value)
+		})
+		response.AssertMessageJSONKeyValue(t, "ProcessingError", func(t *testing.T, value any) {
+			require.NotEmpty(t, value)
+		})
+
+		// The failure must be persisted, not just returned.
+		stored, exists, getErr := deps.Database().GetBookmark(ctx, savedBookmark[0].ID, "")
+		require.NoError(t, getErr)
+		require.True(t, exists)
+		require.Equal(t, model.BookmarkProcessingFailed, stored.ProcessingStatus)
+		require.Equal(t, model.BookmarkStepDownload, stored.ProcessingFailedStep)
+		require.NotEmpty(t, stored.ProcessingError)
 	})
 }

@@ -64,6 +64,7 @@ var sqliteMigrations = []migration{
 	newFileMigration("0.3.0", "0.4.0", "sqlite/0002_denormalize_content"),
 	newFileMigration("0.4.0", "0.5.0", "sqlite/0003_uniq_id"),
 	newFileMigration("0.5.0", "0.6.0", "sqlite/0004_created_time"),
+	newFileMigration("0.6.0", "0.7.0", "sqlite/0005_processing_status"),
 }
 
 // SQLiteDatabase is implementation of Database interface
@@ -220,15 +221,17 @@ func (db *SQLiteDatabase) SaveBookmarks(ctx context.Context, create bool, bookma
 		// Prepare statement
 
 		stmtInsertBook, err := tx.PreparexContext(ctx, `INSERT INTO bookmark
-			(url, title, excerpt, author, public, modified_at, has_content, created_at)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
+			(url, title, excerpt, author, public, modified_at, has_content, created_at,
+			 processing_status, processing_failed_step, processing_error)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
 		if err != nil {
 			return fmt.Errorf("failed to prepare insert book statement: %w", err)
 		}
 
 		stmtUpdateBook, err := tx.PreparexContext(ctx, `UPDATE bookmark SET
 			url = ?, title = ?,	excerpt = ?, author = ?,
-			public = ?, modified_at = ?, has_content = ?
+			public = ?, modified_at = ?, has_content = ?,
+			processing_status = ?, processing_failed_step = ?, processing_error = ?
 			WHERE id = ?`)
 		if err != nil {
 			return fmt.Errorf("failed to prepare update book statement: %w", err)
@@ -297,10 +300,12 @@ func (db *SQLiteDatabase) SaveBookmarks(ctx context.Context, create bool, bookma
 			if create {
 				book.CreatedAt = modifiedTime
 				err = stmtInsertBook.QueryRowContext(ctx,
-					book.URL, book.Title, book.Excerpt, book.Author, book.Public, book.ModifiedAt, hasContent, book.CreatedAt).Scan(&book.ID)
+					book.URL, book.Title, book.Excerpt, book.Author, book.Public, book.ModifiedAt, hasContent, book.CreatedAt,
+					string(book.ProcessingStatus), book.ProcessingFailedStep, book.ProcessingError).Scan(&book.ID)
 			} else {
 				_, err = stmtUpdateBook.ExecContext(ctx,
-					book.URL, book.Title, book.Excerpt, book.Author, book.Public, book.ModifiedAt, hasContent, book.ID)
+					book.URL, book.Title, book.Excerpt, book.Author, book.Public, book.ModifiedAt, hasContent,
+					string(book.ProcessingStatus), book.ProcessingFailedStep, book.ProcessingError, book.ID)
 			}
 			if err != nil {
 				// Map unique constraint violations to database errors
@@ -403,7 +408,10 @@ func (db *SQLiteDatabase) GetBookmarks(ctx context.Context, opts model.DBGetBook
 		b.public,
 		b.created_at,
 		b.modified_at,
-		b.has_content
+		b.has_content,
+		b.processing_status,
+		b.processing_failed_step,
+		b.processing_error
 		FROM bookmark b
 		WHERE 1`
 
@@ -763,7 +771,8 @@ func (db *SQLiteDatabase) GetBookmark(ctx context.Context, id int, url string) (
 	sb := sqlbuilder.NewSelectBuilder()
 	sb.Select(
 		"b.id", "b.url", "b.title", "b.excerpt", "b.author", "b.public", "b.modified_at",
-		"bc.content", "bc.html", "b.has_content", "b.created_at")
+		"bc.content", "bc.html", "b.has_content", "b.created_at",
+		"b.processing_status", "b.processing_failed_step", "b.processing_error")
 	sb.From("bookmark b")
 	sb.JoinWithOption(sqlbuilder.LeftJoin, "bookmark_content bc", "bc.docid = b.id")
 
